@@ -2018,6 +2018,11 @@ SHOW TABLES;
         load_folder_action.triggered.connect(self.load_folder)
         file_menu.addAction(load_folder_action)
         
+        # Load Folder (CSV files)
+        load_csv_folder_action = QAction('Load Folder (CSV Files)', self)
+        load_csv_folder_action.triggered.connect(self.load_csv_folder)
+        file_menu.addAction(load_csv_folder_action)
+        
         file_menu.addSeparator()
         
         # Exit
@@ -2107,9 +2112,13 @@ SHOW TABLES;
         
         toolbar.addSeparator()
         
-        load_folder_btn = QPushButton('Load Folder')
+        load_folder_btn = QPushButton('Load Folder (Excel)')
         load_folder_btn.clicked.connect(self.load_folder)
         toolbar.addWidget(load_folder_btn)
+        
+        load_csv_folder_btn = QPushButton('Load Folder (CSV)')
+        load_csv_folder_btn.clicked.connect(self.load_csv_folder)
+        toolbar.addWidget(load_csv_folder_btn)
         
     def setup_status_bar(self):
         """Setup the status bar"""
@@ -2373,6 +2382,125 @@ SHOW TABLES;
             
         except Exception as e:
             error_msg = f"Error loading folder: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Load Error", error_msg)
+    
+    def load_csv_folder(self):
+        """Load all CSV files from a selected folder"""
+        if not POLARS_AVAILABLE:
+            QMessageBox.critical(
+                self, "Polars Required", 
+                "Polars library is required for folder loading feature.\n"
+                "Please install it with: pip install polars"
+            )
+            return
+            
+        folder_path = QFileDialog.getExistingDirectory(
+            self, 'Select Folder with CSV Files', ''
+        )
+        
+        if not folder_path:
+            return
+            
+        try:
+            import os
+            import glob
+            
+            # Find all CSV files in the folder
+            csv_files = glob.glob(os.path.join(folder_path, '*.csv'))
+                
+            if not csv_files:
+                QMessageBox.information(
+                    self, "No CSV Files", 
+                    "No CSV files found in the selected folder."
+                )
+                return
+            
+            # Use the first CSV file to configure import settings
+            first_file = csv_files[0]
+            dialog = CSVImportDialog(self, first_file)
+            
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+                
+            # Get CSV configuration from dialog
+            delimiter = dialog.get_delimiter_value()
+            has_header = dialog.header_check.isChecked()
+            quote_char = dialog.get_quote_value()
+            encoding = dialog.encoding_combo.currentText()
+            
+            # Ask for table name
+            table_name, ok = QInputDialog.getText(
+                self, 
+                "Table Name", 
+                f"Enter table name for combined data from {len(csv_files)} CSV files:",
+                text=f"combined_csv_data"
+            )
+            
+            if not ok or not table_name.strip():
+                return
+                
+            table_name = table_name.strip()
+            table_name = self.get_unique_table_name(table_name)
+            
+            # Load and combine all CSV files
+            combined_df = None
+            loaded_files = []
+            
+            for file_path in csv_files:
+                try:
+                    # Read CSV with Polars using the configured settings
+                    read_options = {
+                        'has_header': has_header,
+                        'encoding': encoding if encoding != 'Auto' else 'utf8'
+                    }
+                    
+                    # Only add separator if not using automatic detection
+                    if delimiter is not None:
+                        read_options['separator'] = delimiter
+                    
+                    # Handle quote character
+                    if quote_char is not None and quote_char != 'Auto':
+                        if quote_char == '':
+                            read_options['quote_char'] = None
+                        else:
+                            read_options['quote_char'] = quote_char
+                    
+                    df = pl.read_csv(file_path, **read_options)
+                    
+                    # Add source file column
+                    df = df.with_columns(pl.lit(os.path.basename(file_path)).alias('_source_file'))
+                    
+                    if combined_df is None:
+                        combined_df = df
+                    else:
+                        # Use concat with how='diagonal' to handle different schemas
+                        combined_df = pl.concat([combined_df, df], how='diagonal')
+                    
+                    loaded_files.append(os.path.basename(file_path))
+                    
+                except Exception as e:
+                    self.log_message(f"Warning: Could not load {os.path.basename(file_path)}: {str(e)}")
+                    continue
+            
+            if combined_df is None or combined_df.height == 0:
+                QMessageBox.warning(
+                    self, "Load Error", 
+                    "No data could be loaded from any CSV files in the folder."
+                )
+                return
+                
+            # Create table in DuckDB
+            self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM combined_df")
+            
+            # Log success message
+            self.log_message(
+                f"Successfully loaded {len(loaded_files)} CSV files into table '{table_name}': {', '.join(loaded_files)}"
+            )
+            self.refresh_database_tree()
+            
+        except Exception as e:
+            error_msg = f"Error loading CSV folder: {str(e)}"
             self.log_message(error_msg)
             QMessageBox.critical(self, "Load Error", error_msg)
         
