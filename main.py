@@ -1111,21 +1111,38 @@ class DatabaseTreeWidget(QTreeWidget):
 class CustomSQLLexer(QsciLexerSQL):
     """Custom SQL Lexer with additional keywords including USE"""
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, highlighted_keywords=None, non_highlighted_keywords=None):
         super().__init__(parent)
+        self.highlighted_keywords = highlighted_keywords or []
+        self.non_highlighted_keywords = non_highlighted_keywords or []
     
     def keywords(self, set):
-        """Override keywords method to include USE and other missing keywords"""
+        """Override keywords method to include custom keywords and exclude non-highlighted ones"""
         # Get the original keywords from the parent class
         original_keywords = super().keywords(set)
         
         if set == 1:  # Primary keyword set
-            # Add USE and other missing keywords to the original set
-            additional_keywords = " use USE database DATABASE schema SCHEMA"
+            # Start with original keywords
+            all_keywords = []
             if original_keywords:
-                return original_keywords + additional_keywords
-            else:
-                return additional_keywords.strip()
+                all_keywords.extend(original_keywords.split())
+            
+            # Add custom highlighted keywords
+            for keyword in self.highlighted_keywords:
+                all_keywords.append(keyword.upper())
+                all_keywords.append(keyword.lower())
+            
+            # Remove non-highlighted keywords
+            non_highlighted_list = []
+            for keyword in self.non_highlighted_keywords:
+                non_highlighted_list.append(keyword.upper())
+                non_highlighted_list.append(keyword.lower())
+            non_highlighted_set = frozenset(non_highlighted_list)
+            
+            # Filter out non-highlighted keywords
+            filtered_keywords = [kw for kw in all_keywords if kw not in non_highlighted_set]
+            
+            return " ".join(filtered_keywords) if filtered_keywords else ""
         
         return original_keywords
 
@@ -1139,6 +1156,29 @@ class SQLEditor(QWidget):
         self.parent_gui = parent
         self.completer = None
         self.table_names = []
+        
+        # Define SQL keywords that should be highlighted in blue
+        self.sql_keywords = [
+            'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
+            'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
+            'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
+            'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+            'UNION', 'INTERSECT', 'EXCEPT', 'AS', 'DISTINCT',
+            'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'AND', 'OR', 'NOT',
+            'USE', 'DATABASE', 'SCHEMA', 'SHOW', 'DESCRIBE', 'DESC',
+            'IF', 'EXISTS', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
+            'UNIQUE', 'NULL', 'DEFAULT', 'AUTO_INCREMENT', 'CONSTRAINT',
+            'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'BETWEEN', 'IN',
+            'LIKE', 'IS', 'TRUE', 'FALSE', 'SHOW', 'DATABASES', 'TABLES'
+        ]
+        
+        # Define SQL commands that should NOT be highlighted in blue
+        # You can manually add commands here that should appear as regular text
+        self.non_highlighted_keywords = [
+            # Add your custom SQL commands here that should not be highlighted
+            # Example: 'CUSTOM_COMMAND', 'SPECIAL_FUNCTION'
+        ]
+        
         self.setup_ui()
         self.setup_completer()
         
@@ -1147,7 +1187,7 @@ class SQLEditor(QWidget):
         
         if QSCINTILLA_AVAILABLE:
             self.editor = QsciScintilla()
-            self.lexer = CustomSQLLexer()
+            self.lexer = CustomSQLLexer(self, self.sql_keywords, self.non_highlighted_keywords)
             self.editor.setLexer(self.lexer)
             self.editor.setAutoIndent(True)
             self.editor.setIndentationsUseTabs(False)
@@ -1194,22 +1234,10 @@ class SQLEditor(QWidget):
             # Create API for autocompletion
             self.api = QsciAPIs(self.lexer)
             
-            # Add SQL keywords
-            sql_keywords = [
-                'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
-                'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
-                'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
-                'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
-                'UNION', 'INTERSECT', 'EXCEPT', 'AS', 'DISTINCT',
-                'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'AND', 'OR', 'NOT',
-                'USE', 'DATABASE', 'SCHEMA', 'SHOW', 'DESCRIBE', 'DESC',
-                'IF', 'EXISTS', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
-                'UNIQUE', 'NULL', 'DEFAULT', 'AUTO_INCREMENT', 'CONSTRAINT',
-                'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'BETWEEN', 'IN',
-                'LIKE', 'IS', 'TRUE', 'FALSE'
-            ]
+            # Add SQL keywords (both highlighted and non-highlighted for autocompletion)
+            all_keywords = self.sql_keywords + self.non_highlighted_keywords
             
-            for keyword in sql_keywords:
+            for keyword in all_keywords:
                 self.api.add(keyword)  # Add uppercase version
                 self.api.add(keyword.lower())  # Add lowercase version
             
