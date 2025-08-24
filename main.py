@@ -968,14 +968,16 @@ class DatabaseTreeWidget(QTreeWidget):
             select_action = menu.addAction("Select * FROM table")
             describe_action = menu.addAction("Describe table")
             
+            # Initialize action variables
+            rename_action = None
+            remove_action = None
+            delete_action = None
+            
             # Add rename and remove options only for local tables
             if database == 'local':
                 menu.addSeparator()
                 rename_action = menu.addAction("Rename table")
                 remove_action = menu.addAction("Remove table")
-            
-            menu.addSeparator()
-            delete_action = menu.addAction("Delete table")
             
             # Execute menu
             action = menu.exec(self.mapToGlobal(position))
@@ -984,12 +986,11 @@ class DatabaseTreeWidget(QTreeWidget):
                 self.select_from_table(item.text(0), database)
             elif action == describe_action:
                 self.describe_table(item.text(0), database)
-            elif action == delete_action:
-                self.delete_table(item.text(0), database)
-            elif database == 'local' and 'rename_action' in locals() and action == rename_action:
+            elif database == 'local' and rename_action and action == rename_action:
                 self.rename_table(item.text(0), database)
-            elif database == 'local' and 'remove_action' in locals() and action == remove_action:
+            elif database == 'local' and remove_action and action == remove_action:
                 self.remove_table(item.text(0), database)
+
                 
     def get_selected_table_info(self):
         """Get table name and database from selected item"""
