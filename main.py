@@ -1131,9 +1131,7 @@ class SQLEditor(QWidget):
             self.editor.setIndentationsUseTabs(False)
             self.editor.setIndentationWidth(4)
             self.editor.setTabWidth(4)
-            self.editor.setAutoCompletionSource(QsciScintilla.AutoCompletionSource.AcsAll)
-            self.editor.setAutoCompletionThreshold(1)
-            self.editor.setAutoCompletionCaseSensitivity(False)
+            # Autocompletion will be configured in update_table_names method
             
             # Set font
             font = QFont('Consolas', 10)
@@ -1148,53 +1146,70 @@ class SQLEditor(QWidget):
         
     def setup_completer(self):
         """Setup autocomplete functionality"""
-        self.completer = QCompleter()
-        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        
-        # Create string list model for table names
-        self.model = QStringListModel()
-        self.completer.setModel(self.model)
-        
-        # Set completer for the editor
-        if QSCINTILLA_AVAILABLE:
-            # For QsciScintilla, we need to handle completion manually
-            pass  # QsciScintilla has its own autocompletion system
-        else:
+        if not QSCINTILLA_AVAILABLE:
+            # Only setup QCompleter for QTextEdit
+            self.completer = QCompleter()
+            self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+            self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+            
+            # Create string list model for table names
+            self.model = QStringListModel()
+            self.completer.setModel(self.model)
             self.editor.setCompleter(self.completer)
+        else:
+            # For QsciScintilla, we'll setup autocompletion in update_table_names
+            self.completer = None
+            self.model = None
     
     def update_table_names(self, table_names: list):
         """Update the list of table names for autocomplete"""
         self.table_names = table_names
-        if self.model:
-            self.model.setStringList(table_names)
         
-        # For QsciScintilla, update the API for autocompletion
-        if QSCINTILLA_AVAILABLE and hasattr(self, 'editor'):
+        if QSCINTILLA_AVAILABLE and hasattr(self, 'editor') and hasattr(self, 'lexer'):
+            # For QsciScintilla, use the built-in autocompletion
             from PyQt6.Qsci import QsciAPIs
-            if hasattr(self, 'lexer'):
-                # Create API for autocompletion
-                self.api = QsciAPIs(self.lexer)
-                
-                # Add SQL keywords
-                sql_keywords = [
-                    'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
-                    'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
-                    'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
-                    'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
-                    'UNION', 'INTERSECT', 'EXCEPT', 'AS', 'DISTINCT',
-                    'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'AND', 'OR', 'NOT'
-                ]
-                
-                for keyword in sql_keywords:
-                    self.api.add(keyword)
-                
-                # Add table names
-                for table_name in table_names:
-                    self.api.add(table_name)
-                
-                # Prepare the API
-                self.api.prepare()
+            
+            # Create API for autocompletion
+            self.api = QsciAPIs(self.lexer)
+            
+            # Add SQL keywords
+            sql_keywords = [
+                'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
+                'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
+                'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
+                'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+                'UNION', 'INTERSECT', 'EXCEPT', 'AS', 'DISTINCT',
+                'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'AND', 'OR', 'NOT',
+                'USE', 'DATABASE', 'SCHEMA', 'SHOW', 'DESCRIBE', 'DESC',
+                'IF', 'EXISTS', 'PRIMARY', 'KEY', 'FOREIGN', 'REFERENCES',
+                'UNIQUE', 'NULL', 'DEFAULT', 'AUTO_INCREMENT', 'CONSTRAINT',
+                'CASE', 'WHEN', 'THEN', 'ELSE', 'END', 'BETWEEN', 'IN',
+                'LIKE', 'IS', 'TRUE', 'FALSE'
+            ]
+            
+            for keyword in sql_keywords:
+                self.api.add(keyword)  # Add uppercase version
+                self.api.add(keyword.lower())  # Add lowercase version
+            
+            # Add table names
+            for table_name in table_names:
+                self.api.add(table_name)  # Add original case
+                self.api.add(table_name.lower())  # Add lowercase version
+                self.api.add(table_name.upper())  # Add uppercase version
+            
+            # Prepare the API
+            self.api.prepare()
+            
+            # Enable autocompletion
+            self.editor.setAutoCompletionSource(QsciScintilla.AutoCompletionSource.AcsAPIs)
+            self.editor.setAutoCompletionThreshold(1)
+            self.editor.setAutoCompletionCaseSensitivity(False)
+            self.editor.setAutoCompletionReplaceWord(True)
+            self.editor.setAutoCompletionShowSingle(True)
+            
+        elif self.model:
+            # For QTextEdit, update the string list model
+            self.model.setStringList(table_names)
         
     def get_text(self) -> str:
         """Get the current text in the editor"""
