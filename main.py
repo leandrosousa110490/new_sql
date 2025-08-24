@@ -1108,6 +1108,28 @@ class DatabaseTreeWidget(QTreeWidget):
                     QMessageBox.critical(self, "Remove Error", error_msg)
 
 
+class CustomSQLLexer(QsciLexerSQL):
+    """Custom SQL Lexer with additional keywords including USE"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def keywords(self, set):
+        """Override keywords method to include USE and other missing keywords"""
+        # Get the original keywords from the parent class
+        original_keywords = super().keywords(set)
+        
+        if set == 1:  # Primary keyword set
+            # Add USE and other missing keywords to the original set
+            additional_keywords = " use USE database DATABASE schema SCHEMA"
+            if original_keywords:
+                return original_keywords + additional_keywords
+            else:
+                return additional_keywords.strip()
+        
+        return original_keywords
+
+
 class SQLEditor(QWidget):
     """SQL Editor with syntax highlighting"""
     
@@ -1125,7 +1147,7 @@ class SQLEditor(QWidget):
         
         if QSCINTILLA_AVAILABLE:
             self.editor = QsciScintilla()
-            self.lexer = QsciLexerSQL()
+            self.lexer = CustomSQLLexer()
             self.editor.setLexer(self.lexer)
             self.editor.setAutoIndent(True)
             self.editor.setIndentationsUseTabs(False)
