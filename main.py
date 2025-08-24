@@ -16,9 +16,10 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QMenuBar, QToolBar, QStatusBar, QFileDialog,
     QMessageBox, QHeaderView, QAbstractItemView, QLabel, QPushButton,
     QProgressBar, QTabWidget, QMenu, QDialog, QFormLayout, QLineEdit,
-    QCheckBox, QSpinBox, QDialogButtonBox, QComboBox, QGroupBox, QInputDialog
+    QCheckBox, QSpinBox, QDialogButtonBox, QComboBox, QGroupBox, QInputDialog,
+    QCompleter
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings, QStringListModel
 from PyQt6.QtGui import QAction, QIcon, QFont, QPixmap
 
 try:
@@ -1113,7 +1114,11 @@ class SQLEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_theme = 'light'
+        self.parent_gui = parent
+        self.completer = None
+        self.table_names = []
         self.setup_ui()
+        self.setup_completer()
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1140,6 +1145,56 @@ class SQLEditor(QWidget):
             self.editor.setFont(font)
             
         layout.addWidget(self.editor)
+        
+    def setup_completer(self):
+        """Setup autocomplete functionality"""
+        self.completer = QCompleter()
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        
+        # Create string list model for table names
+        self.model = QStringListModel()
+        self.completer.setModel(self.model)
+        
+        # Set completer for the editor
+        if QSCINTILLA_AVAILABLE:
+            # For QsciScintilla, we need to handle completion manually
+            pass  # QsciScintilla has its own autocompletion system
+        else:
+            self.editor.setCompleter(self.completer)
+    
+    def update_table_names(self, table_names: list):
+        """Update the list of table names for autocomplete"""
+        self.table_names = table_names
+        if self.model:
+            self.model.setStringList(table_names)
+        
+        # For QsciScintilla, update the API for autocompletion
+        if QSCINTILLA_AVAILABLE and hasattr(self, 'editor'):
+            from PyQt6.Qsci import QsciAPIs
+            if hasattr(self, 'lexer'):
+                # Create API for autocompletion
+                self.api = QsciAPIs(self.lexer)
+                
+                # Add SQL keywords
+                sql_keywords = [
+                    'SELECT', 'FROM', 'WHERE', 'INSERT', 'UPDATE', 'DELETE',
+                    'CREATE', 'DROP', 'ALTER', 'TABLE', 'INDEX', 'VIEW',
+                    'JOIN', 'INNER', 'LEFT', 'RIGHT', 'OUTER', 'ON',
+                    'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT', 'OFFSET',
+                    'UNION', 'INTERSECT', 'EXCEPT', 'AS', 'DISTINCT',
+                    'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'AND', 'OR', 'NOT'
+                ]
+                
+                for keyword in sql_keywords:
+                    self.api.add(keyword)
+                
+                # Add table names
+                for table_name in table_names:
+                    self.api.add(table_name)
+                
+                # Prepare the API
+                self.api.prepare()
         
     def get_text(self) -> str:
         """Get the current text in the editor"""
@@ -1430,6 +1485,9 @@ class DuckDBGUI(QMainWindow):
         # Apply initial theme
         self.apply_theme(self.theme_manager.get_current_theme())
         
+        # Initial refresh to populate autocomplete
+        self.refresh_database_tree()
+        
     def setup_database(self):
         """Initialize DuckDB connection"""
         try:
@@ -1466,7 +1524,7 @@ class DuckDBGUI(QMainWindow):
         main_splitter.addWidget(right_splitter)
         
         # SQL Editor
-        self.sql_editor = SQLEditor()
+        self.sql_editor = SQLEditor(self)
         right_splitter.addWidget(self.sql_editor)
         
         # Results area with tabs
@@ -1736,11 +1794,16 @@ SHOW TABLES;
             # Clear existing tables for local database
             self.db_tree.local_tables_node.takeChildren()
             
+            # Collect all table names for autocomplete
+            all_table_names = []
+            
             # Get all tables from the local schema
             tables_result = self.connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'local'").fetchall()
             
             for table_row in tables_result:
                 table_name = table_row[0]
+                all_table_names.append(f"local.{table_name}")
+                all_table_names.append(table_name)  # Also add without schema prefix
                 
                 # Get column information
                 try:
@@ -1817,6 +1880,11 @@ SHOW TABLES;
                                                 if table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
                                                     continue
                                                 
+                                                # Add to autocomplete list
+                                                all_table_names.append(f"{db_name}.{schema_name}.{table_name}")
+                                                all_table_names.append(f"{schema_name}.{table_name}")
+                                                all_table_names.append(table_name)  # Also add without prefixes
+                                                
                                                 # Create table item directly under Tables node
                                                 table_item = QTreeWidgetItem(self.db_tree.table_nodes[schema_key], [table_name])
                                                 table_item.setData(0, Qt.ItemDataRole.UserRole, schema_key)
@@ -1878,6 +1946,10 @@ SHOW TABLES;
                             if table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
                                 continue
                             
+                            # Add to autocomplete list
+                            all_table_names.append(f"{db_name}.{table_name}")
+                            all_table_names.append(table_name)  # Also add without database prefix
+                            
                             # Create table item directly under Tables node
                             table_item = QTreeWidgetItem(self.db_tree.table_nodes[db_name], [table_name])
                             table_item.setData(0, Qt.ItemDataRole.UserRole, db_name)
@@ -1891,6 +1963,9 @@ SHOW TABLES;
                                 pass  # No columns info available
                 except Exception as e:
                     self.log_message(f"Error refreshing tables for {db_name}: {e}")
+            
+            # Update SQL editor autocomplete with all collected table names
+            self.sql_editor.update_table_names(all_table_names)
                     
         except Exception as e:
             self.log_message(f"Error refreshing database tree: {e}")
