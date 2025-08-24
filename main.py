@@ -1112,6 +1112,7 @@ class SQLEditor(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.current_theme = 'light'
         self.setup_ui()
         
     def setup_ui(self):
@@ -1119,7 +1120,8 @@ class SQLEditor(QWidget):
         
         if QSCINTILLA_AVAILABLE:
             self.editor = QsciScintilla()
-            self.editor.setLexer(QsciLexerSQL())
+            self.lexer = QsciLexerSQL()
+            self.editor.setLexer(self.lexer)
             self.editor.setAutoIndent(True)
             self.editor.setIndentationsUseTabs(False)
             self.editor.setIndentationWidth(4)
@@ -1131,6 +1133,7 @@ class SQLEditor(QWidget):
             # Set font
             font = QFont('Consolas', 10)
             self.editor.setFont(font)
+            self.lexer.setFont(font)
         else:
             self.editor = QTextEdit()
             font = QFont('Consolas', 10)
@@ -1151,6 +1154,100 @@ class SQLEditor(QWidget):
             self.editor.setText(text)
         else:
             self.editor.setPlainText(text)
+    
+    def apply_theme(self, theme_name: str):
+        """Apply theme to the SQL editor"""
+        self.current_theme = theme_name
+        
+        if QSCINTILLA_AVAILABLE and hasattr(self, 'lexer'):
+            # Define theme colors for QsciScintilla
+            theme_colors = self._get_theme_colors(theme_name)
+            
+            # Apply colors to the lexer
+            from PyQt6.QtGui import QColor
+            
+            # Set paper (background) and default text color
+            self.lexer.setPaper(QColor(theme_colors['background']))
+            self.lexer.setColor(QColor(theme_colors['text']))
+            
+            # Set specific SQL syntax colors
+            self.lexer.setColor(QColor(theme_colors['keyword']), self.lexer.Keyword)
+            self.lexer.setColor(QColor(theme_colors['string']), self.lexer.SingleQuotedString)
+            self.lexer.setColor(QColor(theme_colors['string']), self.lexer.DoubleQuotedString)
+            self.lexer.setColor(QColor(theme_colors['comment']), self.lexer.Comment)
+            self.lexer.setColor(QColor(theme_colors['comment']), self.lexer.CommentLine)
+            self.lexer.setColor(QColor(theme_colors['number']), self.lexer.Number)
+            self.lexer.setColor(QColor(theme_colors['operator']), self.lexer.Operator)
+            
+            # Set background for all styles
+            for style in range(16):  # QsciLexerSQL has about 16 styles
+                self.lexer.setPaper(QColor(theme_colors['background']), style)
+            
+            # Set editor background and selection colors
+            self.editor.setCaretLineBackgroundColor(QColor(theme_colors['caret_line']))
+            self.editor.setSelectionBackgroundColor(QColor(theme_colors['selection']))
+            self.editor.setMarginLineNumbers(0, True)
+            self.editor.setMarginWidth(0, 40)
+            self.editor.setMarginsBackgroundColor(QColor(theme_colors['margin']))
+            self.editor.setMarginsForegroundColor(QColor(theme_colors['margin_text']))
+    
+    def _get_theme_colors(self, theme_name: str) -> dict:
+        """Get color scheme for the specified theme"""
+        themes = {
+            'light': {
+                'background': '#ffffff',
+                'text': '#333333',
+                'keyword': '#0000ff',
+                'string': '#008000',
+                'comment': '#808080',
+                'number': '#ff8000',
+                'operator': '#800080',
+                'caret_line': '#f0f0f0',
+                'selection': '#e3f2fd',
+                'margin': '#f8f8f8',
+                'margin_text': '#666666'
+            },
+            'dark': {
+                'background': '#2d2d2d',
+                'text': '#ffffff',
+                'keyword': '#569cd6',
+                'string': '#ce9178',
+                'comment': '#6a9955',
+                'number': '#b5cea8',
+                'operator': '#d4d4d4',
+                'caret_line': '#404040',
+                'selection': '#4a4a4a',
+                'margin': '#2b2b2b',
+                'margin_text': '#cccccc'
+            },
+            'blue': {
+                'background': '#ffffff',
+                'text': '#0d47a1',
+                'keyword': '#1976d2',
+                'string': '#388e3c',
+                'comment': '#757575',
+                'number': '#f57c00',
+                'operator': '#7b1fa2',
+                'caret_line': '#f3f9ff',
+                'selection': '#bbdefb',
+                'margin': '#e3f2fd',
+                'margin_text': '#1565c0'
+            },
+            'green': {
+                'background': '#ffffff',
+                'text': '#1b5e20',
+                'keyword': '#388e3c',
+                'string': '#2e7d32',
+                'comment': '#757575',
+                'number': '#f57c00',
+                'operator': '#7b1fa2',
+                'caret_line': '#f1f8e9',
+                'selection': '#c8e6c9',
+                'margin': '#e8f5e8',
+                'margin_text': '#2e7d32'
+            }
+        }
+        return themes.get(theme_name, themes['light'])
 
 
 class ResultsTableWidget(QWidget):
@@ -2137,6 +2234,11 @@ SHOW TABLES;
         stylesheet = self.theme_manager.get_theme_stylesheet(theme_name)
         self.setStyleSheet(stylesheet)
         self.theme_manager.set_theme(theme_name)
+        
+        # Apply theme to SQL editor
+        if hasattr(self, 'sql_editor'):
+            self.sql_editor.apply_theme(theme_name)
+        
         self.log_message(f"Applied {theme_name.title()} theme")
     
     def closeEvent(self, event):
