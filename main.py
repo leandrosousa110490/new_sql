@@ -10,6 +10,13 @@ import traceback
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+try:
+    import polars as pl
+    POLARS_AVAILABLE = True
+except ImportError:
+    POLARS_AVAILABLE = False
+    print("Polars not available, folder loading feature will be disabled")
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QSplitter, QTreeWidget, QTreeWidgetItem, QTextEdit, QTableWidget,
@@ -2006,6 +2013,13 @@ SHOW TABLES;
         
         file_menu.addSeparator()
         
+        # Load Folder (Excel files)
+        load_folder_action = QAction('Load Folder (Excel Files)', self)
+        load_folder_action.triggered.connect(self.load_folder)
+        file_menu.addAction(load_folder_action)
+        
+        file_menu.addSeparator()
+        
         # Exit
         exit_action = QAction('Exit', self)
         exit_action.triggered.connect(self.close)
@@ -2090,6 +2104,12 @@ SHOW TABLES;
         load_parquet_btn = QPushButton('Load Parquet')
         load_parquet_btn.clicked.connect(lambda: self.load_file('parquet'))
         toolbar.addWidget(load_parquet_btn)
+        
+        toolbar.addSeparator()
+        
+        load_folder_btn = QPushButton('Load Folder')
+        load_folder_btn.clicked.connect(self.load_folder)
+        toolbar.addWidget(load_folder_btn)
         
     def setup_status_bar(self):
         """Setup the status bar"""
@@ -2241,6 +2261,120 @@ SHOW TABLES;
         """Load Parquet file using DuckDB"""
         query = f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')"
         self.connection.execute(query)
+        
+    def load_folder(self):
+        """Load all Excel files from a selected folder"""
+        if not POLARS_AVAILABLE:
+            QMessageBox.critical(
+                self, "Polars Required", 
+                "Polars library is required for folder loading feature.\n"
+                "Please install it with: pip install polars"
+            )
+            return
+            
+        folder_path = QFileDialog.getExistingDirectory(
+            self, 'Select Folder with Excel Files', ''
+        )
+        
+        if not folder_path:
+            return
+            
+        try:
+            import os
+            import glob
+            
+            # Find all Excel files in the folder
+            excel_extensions = ['*.xlsx', '*.xls']
+            excel_files = []
+            
+            for ext in excel_extensions:
+                excel_files.extend(glob.glob(os.path.join(folder_path, ext)))
+                
+            if not excel_files:
+                QMessageBox.information(
+                    self, "No Excel Files", 
+                    "No Excel files found in the selected folder."
+                )
+                return
+                
+            # Ask for sheet name
+            sheet_name, ok = QInputDialog.getText(
+                self, 
+                "Sheet Name", 
+                f"Enter sheet name to load from all {len(excel_files)} Excel files (leave empty for first sheet):",
+                text=""
+            )
+            
+            if not ok:
+                return
+                
+            # Use first sheet if empty
+            if not sheet_name.strip():
+                sheet_name = None  # Polars will use first sheet
+            
+            # Ask for table name
+            table_name, ok = QInputDialog.getText(
+                self, 
+                "Table Name", 
+                f"Enter table name for combined data from {len(excel_files)} Excel files:",
+                text="combined_excel_data"
+            )
+            
+            if not ok or not table_name:
+                return
+                
+            # Make sure table name is unique
+            table_name = self.get_unique_table_name(table_name)
+            
+            # Load and combine all Excel files
+            combined_df = None
+            loaded_files = []
+            
+            for file_path in excel_files:
+                try:
+                    # Read Excel file with Polars, using specified sheet
+                    if sheet_name:
+                        df = pl.read_excel(file_path, sheet_name=sheet_name)
+                    else:
+                        df = pl.read_excel(file_path)  # Use first sheet
+                    
+                    # Add source file column
+                    df = df.with_columns(
+                        pl.lit(os.path.basename(file_path)).alias('_source_file')
+                    )
+                    
+                    if combined_df is None:
+                        combined_df = df
+                    else:
+                        # Use concat with how='diagonal' to handle different schemas
+                        combined_df = pl.concat([combined_df, df], how='diagonal')
+                    
+                    loaded_files.append(os.path.basename(file_path))
+                    
+                except Exception as e:
+                    self.log_message(f"Warning: Could not load {os.path.basename(file_path)} (sheet: {sheet_name or 'first'}): {str(e)}")
+                    continue
+            
+            if combined_df is None or combined_df.height == 0:
+                QMessageBox.warning(
+                    self, "Load Error", 
+                    "No data could be loaded from any Excel files in the folder."
+                )
+                return
+                
+            # Create table in DuckDB
+            self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM combined_df")
+            
+            # Log success message
+            self.log_message(
+                f"Successfully loaded {len(loaded_files)} Excel files into table '{table_name}': {', '.join(loaded_files)}"
+            )
+            self.refresh_database_tree()
+            
+        except Exception as e:
+            error_msg = f"Error loading folder: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Load Error", error_msg)
         
     def refresh_database_tree(self):
         """Refresh the database tree with current tables"""
