@@ -189,6 +189,358 @@ class DatabaseConnectionManager:
         self.settings.endArray()
 
 
+class CSVImportDialog(QDialog):
+    """Dialog for configuring CSV import settings"""
+    
+    def __init__(self, parent=None, file_path: str = ""):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle("CSV Import Settings")
+        self.setModal(True)
+        self.resize(500, 400)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # File info
+        file_group = QGroupBox("File Information")
+        file_layout = QFormLayout(file_group)
+        
+        self.file_label = QLabel(self.file_path)
+        file_layout.addRow("File:", self.file_label)
+        
+        layout.addWidget(file_group)
+        
+        # Delimiter settings
+        delimiter_group = QGroupBox("Delimiter Settings")
+        delimiter_layout = QFormLayout(delimiter_group)
+        
+        self.delimiter_combo = QComboBox()
+        self.delimiter_combo.addItems([
+            "Automatic (recommended)",
+            "Comma (,)",
+            "Semicolon (;)",
+            "Tab",
+            "Pipe (|)",
+            "Custom"
+        ])
+        self.delimiter_combo.setCurrentIndex(0)  # Default to automatic
+        self.delimiter_combo.currentTextChanged.connect(self.on_delimiter_changed)
+        delimiter_layout.addRow("Delimiter:", self.delimiter_combo)
+        
+        self.custom_delimiter_edit = QLineEdit()
+        self.custom_delimiter_edit.setEnabled(False)
+        self.custom_delimiter_edit.setPlaceholderText("Enter custom delimiter")
+        delimiter_layout.addRow("Custom Delimiter:", self.custom_delimiter_edit)
+        
+        layout.addWidget(delimiter_group)
+        
+        # Additional options
+        options_group = QGroupBox("Additional Options")
+        options_layout = QFormLayout(options_group)
+        
+        self.header_check = QCheckBox("First row contains headers")
+        self.header_check.setChecked(True)  # Default to true
+        options_layout.addRow(self.header_check)
+        
+        self.quote_combo = QComboBox()
+        self.quote_combo.addItems(["Auto", '"', "'", "None"])
+        options_layout.addRow("Quote Character:", self.quote_combo)
+        
+        self.encoding_combo = QComboBox()
+        self.encoding_combo.addItems(["Auto", "UTF-8", "UTF-16", "ISO-8859-1", "Windows-1252"])
+        options_layout.addRow("Encoding:", self.encoding_combo)
+        
+        layout.addWidget(options_group)
+        
+        # Preview section
+        preview_group = QGroupBox("Preview (First 5 rows)")
+        preview_layout = QVBoxLayout(preview_group)
+        
+        self.preview_table = QTableWidget()
+        self.preview_table.setMaximumHeight(150)
+        preview_layout.addWidget(self.preview_table)
+        
+        self.preview_button = QPushButton("Update Preview")
+        self.preview_button.clicked.connect(self.update_preview)
+        preview_layout.addWidget(self.preview_button)
+        
+        layout.addWidget(preview_group)
+        
+        # Examples section
+        examples_group = QGroupBox("Common Delimiter Examples")
+        examples_layout = QVBoxLayout(examples_group)
+        
+        examples_text = QLabel(
+            "• Comma (,): Standard CSV format - data1,data2,data3\n"
+            "• Semicolon (;): European CSV format - data1;data2;data3\n"
+            "• Tab: Tab-separated values - data1\tdata2\tdata3\n"
+            "• Pipe (|): Alternative format - data1|data2|data3\n"
+            "• Custom: Any other character you specify"
+        )
+        examples_text.setWordWrap(True)
+        examples_text.setStyleSheet("color: #666; font-size: 9pt;")
+        examples_layout.addWidget(examples_text)
+        
+        layout.addWidget(examples_group)
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        # Note: Preview is only updated when user clicks "Update Preview" button
+        
+    def on_delimiter_changed(self, text):
+        """Enable/disable custom delimiter input based on selection"""
+        is_custom = text == "Custom"
+        self.custom_delimiter_edit.setEnabled(is_custom)
+        # Note: Preview is only updated when user clicks "Update Preview" button
+            
+    def get_delimiter_value(self):
+        """Get the actual delimiter value based on selection"""
+        delimiter_text = self.delimiter_combo.currentText()
+        
+        if delimiter_text == "Automatic (recommended)":
+            return None  # Use DuckDB's auto-detection
+        elif delimiter_text == "Comma (,)":
+            return ","
+        elif delimiter_text == "Semicolon (;)":
+            return ";"
+        elif delimiter_text == "Tab":
+            return "\t"
+        elif delimiter_text == "Pipe (|)":
+            return "|"
+        elif delimiter_text == "Custom":
+            return self.custom_delimiter_edit.text() or ","
+        else:
+            return ","  # Default fallback
+            
+    def get_quote_value(self):
+        """Get the quote character value"""
+        quote_text = self.quote_combo.currentText()
+        if quote_text == "Auto":
+            return None
+        elif quote_text == "None":
+            return ""
+        else:
+            return quote_text
+            
+    def update_preview(self):
+        """Update the preview table with current settings"""
+        try:
+            import duckdb
+            
+            # Create temporary connection for preview
+            temp_conn = duckdb.connect(":memory:")
+            
+            # Build the read_csv query based on settings
+            delimiter = self.get_delimiter_value()
+            quote_char = self.get_quote_value()
+            
+            if delimiter is None:
+                # Use auto-detection
+                query = f"SELECT * FROM read_csv_auto('{self.file_path}') LIMIT 5"
+            else:
+                # Use specific settings
+                params = []
+                params.append(f"delimiter='{delimiter}'")
+                
+                if not self.header_check.isChecked():
+                    params.append("header=false")
+                    
+                if quote_char is not None:
+                    if quote_char == "":
+                        params.append("quote=''")
+                    else:
+                        params.append(f"quote='{quote_char}'")
+                        
+                params_str = ", " + ", ".join(params) if params else ""
+                query = f"SELECT * FROM read_csv('{self.file_path}'{params_str}) LIMIT 5"
+            
+            result = temp_conn.execute(query).fetchall()
+            columns = [desc[0] for desc in temp_conn.description]
+            
+            # Update preview table
+            self.preview_table.setRowCount(len(result))
+            self.preview_table.setColumnCount(len(columns))
+            self.preview_table.setHorizontalHeaderLabels(columns)
+            
+            for row_idx, row_data in enumerate(result):
+                for col_idx, cell_data in enumerate(row_data):
+                    item = QTableWidgetItem(str(cell_data) if cell_data is not None else "")
+                    self.preview_table.setItem(row_idx, col_idx, item)
+                    
+            self.preview_table.resizeColumnsToContents()
+            temp_conn.close()
+            
+        except Exception as e:
+            # Clear preview on error
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(1)
+            self.preview_table.setHorizontalHeaderLabels(["Error"])
+            error_item = QTableWidgetItem(f"Preview error: {str(e)}")
+            self.preview_table.setRowCount(1)
+            self.preview_table.setItem(0, 0, error_item)
+            
+    def get_csv_query(self, table_name: str):
+        """Generate the appropriate CSV loading query based on settings"""
+        delimiter = self.get_delimiter_value()
+        quote_char = self.get_quote_value()
+        
+        if delimiter is None:
+            # Use auto-detection
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{self.file_path}')"
+        else:
+            # Use specific settings
+            params = []
+            params.append(f"delimiter='{delimiter}'")
+            
+            if not self.header_check.isChecked():
+                params.append("header=false")
+                
+            if quote_char is not None:
+                if quote_char == "":
+                    params.append("quote=''")
+                else:
+                    params.append(f"quote='{quote_char}'")
+                    
+            params_str = ", " + ", ".join(params) if params else ""
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv('{self.file_path}'{params_str})"
+
+
+class ExcelImportDialog(QDialog):
+    """Dialog for configuring Excel import settings"""
+    
+    def __init__(self, parent=None, file_path: str = ""):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setWindowTitle("Excel Import Settings")
+        self.setModal(True)
+        self.resize(500, 400)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # File info
+        file_group = QGroupBox("File Information")
+        file_layout = QFormLayout(file_group)
+        file_layout.addRow("File:", QLabel(self.file_path))
+        layout.addWidget(file_group)
+        
+        # Sheet selection
+        sheet_group = QGroupBox("Sheet Selection")
+        sheet_layout = QFormLayout(sheet_group)
+        
+        self.sheet_input = QLineEdit()
+        self.sheet_input.setPlaceholderText("Leave empty for first sheet")
+        sheet_layout.addRow("Sheet Name:", self.sheet_input)
+        
+        # Add examples
+        examples_label = QLabel(
+            "Examples:\n"
+            "• Leave empty: Uses the first sheet\n"
+            "• 'Sheet1': Uses sheet named 'Sheet1'\n"
+            "• 'Data': Uses sheet named 'Data'\n"
+            "• 'Summary': Uses sheet named 'Summary'"
+        )
+        examples_label.setStyleSheet("color: #666; font-size: 11px; margin-top: 10px;")
+        sheet_layout.addRow(examples_label)
+        
+        layout.addWidget(sheet_group)
+        
+        # Options
+        options_group = QGroupBox("Import Options")
+        options_layout = QFormLayout(options_group)
+        
+        self.header_checkbox = QCheckBox("First row contains headers")
+        self.header_checkbox.setChecked(True)
+        options_layout.addRow(self.header_checkbox)
+        
+        layout.addWidget(options_group)
+        
+        # Preview section
+        preview_group = QGroupBox("Preview")
+        preview_layout = QVBoxLayout(preview_group)
+        
+        self.preview_table = QTableWidget()
+        self.preview_table.setMaximumHeight(150)
+        preview_layout.addWidget(self.preview_table)
+        
+        self.preview_button = QPushButton("Update Preview")
+        self.preview_button.clicked.connect(self.update_preview)
+        preview_layout.addWidget(self.preview_button)
+        
+        layout.addWidget(preview_group)
+        
+        # Note: Preview is only updated when user clicks "Update Preview" button
+        
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+    def update_preview(self):
+        """Update the preview table"""
+        try:
+            sheet_name = self.sheet_input.text().strip() or None
+            
+            # Read Excel file with specified sheet
+            if sheet_name:
+                df = pl.read_excel(self.file_path, sheet_name=sheet_name)
+            else:
+                df = pl.read_excel(self.file_path)  # First sheet by default
+            
+            # Limit preview to first 5 rows
+            preview_df = df.head(5)
+            
+            # Setup table
+            self.preview_table.setRowCount(min(5, len(preview_df)))
+            self.preview_table.setColumnCount(len(preview_df.columns))
+            
+            # Set headers
+            if self.header_checkbox.isChecked():
+                self.preview_table.setHorizontalHeaderLabels([str(col) for col in preview_df.columns])
+            else:
+                self.preview_table.setHorizontalHeaderLabels([f"Column {i+1}" for i in range(len(preview_df.columns))])
+            
+            # Fill data
+            for row in range(len(preview_df)):
+                for col in range(len(preview_df.columns)):
+                    value = preview_df.row(row)[col]
+                    item = QTableWidgetItem(str(value) if value is not None else "")
+                    self.preview_table.setItem(row, col, item)
+            
+            # Resize columns to content
+            self.preview_table.resizeColumnsToContents()
+            
+        except Exception as e:
+            # Clear preview on error
+            self.preview_table.setRowCount(0)
+            self.preview_table.setColumnCount(1)
+            self.preview_table.setHorizontalHeaderLabels(["Error"])
+            error_item = QTableWidgetItem(f"Error reading sheet: {str(e)}")
+            self.preview_table.setRowCount(1)
+            self.preview_table.setItem(0, 0, error_item)
+    
+    def get_excel_query(self, table_name: str) -> str:
+        """Generate the Excel loading query"""
+        sheet_name = self.sheet_input.text().strip() or None
+        
+        if sheet_name:
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_excel('{self.file_path}', sheet_name='{sheet_name}')"
+        else:
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_excel('{self.file_path}')"
+
+
 class DatabaseConnectionDialog(QDialog):
     """Dialog for creating/editing database connections"""
     
@@ -1243,9 +1595,7 @@ class SQLEditor(QWidget):
             
             # Add table names
             for table_name in table_names:
-                self.api.add(table_name)  # Add original case
-                self.api.add(table_name.lower())  # Add lowercase version
-                self.api.add(table_name.upper())  # Add uppercase version
+                self.api.add(table_name)  # Add original case only
             
             # Prepare the API
             self.api.prepare()
@@ -1790,16 +2140,17 @@ SHOW TABLES;
             table_name = self.get_unique_table_name(base_table_name)
             
             if file_type == 'csv':
-                self.load_csv_file(file_path, table_name)
+                self.load_csv_file_with_dialog(file_path, table_name)
             elif file_type == 'excel':
-                self.load_excel_file(file_path, table_name)
+                self.load_excel_file_with_dialog(file_path, table_name)
             elif file_type == 'json':
                 self.load_json_file(file_path, table_name)
             elif file_type == 'parquet':
                 self.load_parquet_file(file_path, table_name)
                 
-            self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
-            self.refresh_database_tree()
+            if file_type not in ['csv', 'excel']:  # CSV and Excel loading handle their own success messages
+                self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
+                self.refresh_database_tree()
             
         except Exception as e:
             error_msg = f"Error loading {file_path}: {str(e)}"
@@ -1830,18 +2181,56 @@ SHOW TABLES;
             # If there's an error checking tables, just return base name
             return base_name
     
+    def load_csv_file_with_dialog(self, file_path: str, table_name: str):
+        """Load CSV file with configuration dialog"""
+        dialog = CSVImportDialog(self, file_path)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                query = dialog.get_csv_query(table_name)
+                self.connection.execute(query)
+                self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
+                self.refresh_database_tree()
+            except Exception as e:
+                error_msg = f"Error loading CSV file: {str(e)}"
+                self.log_message(error_msg)
+                QMessageBox.critical(self, "CSV Load Error", error_msg)
+                
     def load_csv_file(self, file_path: str, table_name: str):
-        """Load CSV file using DuckDB"""
+        """Load CSV file using DuckDB (direct method without dialog)"""
         query = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}')"
         self.connection.execute(query)
         
+    def load_excel_file_with_dialog(self, file_path: str, table_name: str):
+        """Load Excel file with configuration dialog"""
+        dialog = ExcelImportDialog(self, file_path)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                sheet_name = dialog.sheet_input.text().strip() or None
+                
+                # Use Polars to read Excel file with specified sheet
+                if sheet_name:
+                    df = pl.read_excel(file_path, sheet_name=sheet_name)
+                else:
+                    df = pl.read_excel(file_path)  # First sheet by default
+                
+                # Convert to DuckDB table
+                self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM df")
+                self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
+                self.refresh_database_tree()
+            except Exception as e:
+                error_msg = f"Error loading Excel file: {str(e)}"
+                self.log_message(error_msg)
+                QMessageBox.critical(self, "Excel Load Error", error_msg)
+                
     def load_excel_file(self, file_path: str, table_name: str):
-        """Load Excel file using Polars and DuckDB"""
+        """Load Excel file using Polars and DuckDB (direct method without dialog)"""
         # Use Polars to read Excel file
         df = pl.read_excel(file_path)
         
         # Convert to DuckDB table
-        self.connection.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df")
+        self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM df")
         
     def load_json_file(self, file_path: str, table_name: str):
         """Load JSON file using DuckDB"""
