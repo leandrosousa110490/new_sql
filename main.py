@@ -1371,7 +1371,9 @@ class DatabaseTreeWidget(QTreeWidget):
                 query = f"SELECT * FROM local.{table_name} LIMIT 100;"
             else:
                 query = f"SELECT * FROM {database}.{table_name} LIMIT 100;"
-            self.parent_gui.sql_editor.set_text(query)
+            current_editor = self.parent_gui.get_current_editor()
+            if current_editor:
+                current_editor.set_text(query)
             
     def describe_table(self, table_name: str, database: str = None):
         """Insert DESCRIBE query for table"""
@@ -1381,7 +1383,9 @@ class DatabaseTreeWidget(QTreeWidget):
                 query = f"DESCRIBE local.{table_name};"
             else:
                 query = f"DESCRIBE {database}.{table_name};"
-            self.parent_gui.sql_editor.set_text(query)
+            current_editor = self.parent_gui.get_current_editor()
+            if current_editor:
+                current_editor.set_text(query)
             
     def delete_table(self, table_name: str, database: str = None):
         """Delete table after confirmation"""
@@ -1945,9 +1949,15 @@ class DuckDBGUI(QMainWindow):
         right_splitter = QSplitter(Qt.Orientation.Vertical)
         main_splitter.addWidget(right_splitter)
         
-        # SQL Editor
-        self.sql_editor = SQLEditor(self)
-        right_splitter.addWidget(self.sql_editor)
+        # SQL Editor Tabs
+        self.query_tabs = QTabWidget()
+        self.query_tabs.setTabsClosable(True)
+        self.query_tabs.tabCloseRequested.connect(self.close_query_tab)
+        
+        # Create first query tab
+        self.add_new_query_tab("Query 1")
+        
+        right_splitter.addWidget(self.query_tabs)
         
         # Results area with tabs
         self.results_tabs = QTabWidget()
@@ -1969,7 +1979,7 @@ class DuckDBGUI(QMainWindow):
         main_splitter.setSizes([300, 1100])
         right_splitter.setSizes([400, 400])
         
-        # Add some sample SQL
+        # Add some sample SQL to first tab
         sample_sql = """-- Welcome to DuckDB SQL GUI
 -- Load files using the File menu or toolbar
 -- Example queries:
@@ -1982,7 +1992,263 @@ SHOW TABLES;
 -- Describe a table structure
 -- DESCRIBE table_name;
 """
-        self.sql_editor.set_text(sample_sql)
+        current_editor = self.get_current_editor()
+        if current_editor:
+            current_editor.set_text(sample_sql)
+    
+    def add_new_query_tab(self, tab_name="New Query"):
+        """Add a new query tab with SQL editor"""
+        editor = SQLEditor(self)
+        
+        # Apply current theme if available
+        if hasattr(self, 'current_theme'):
+            editor.apply_theme(self.current_theme)
+        elif hasattr(self, 'theme_manager'):
+            editor.apply_theme(self.theme_manager.current_theme)
+        
+        # Update table names for autocomplete
+        if hasattr(self, 'connection') and self.connection:
+            try:
+                tables_result = self.connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'local'").fetchall()
+                table_names = []
+                for table_row in tables_result:
+                    table_name = table_row[0]
+                    table_names.append(f"local.{table_name}")
+                    table_names.append(table_name)  # Also add without schema prefix
+                editor.update_table_names(table_names)
+            except Exception:
+                # If table query fails, just skip autocomplete setup
+                pass
+        
+        tab_index = self.query_tabs.addTab(editor, tab_name)
+        self.query_tabs.setCurrentIndex(tab_index)
+        
+        # Enable context menu for tab bar (only set once)
+        if not hasattr(self, '_context_menu_enabled'):
+            self.query_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.query_tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
+            self._context_menu_enabled = True
+        
+        # Add sample SQL for new tabs (except the first one which gets it in setup_ui)
+        if self.query_tabs.count() > 1:
+            sample_sql = """-- New Query Tab
+-- Write your SQL queries here
+
+-- Example:
+-- SELECT * FROM your_table LIMIT 10;
+"""
+            editor.set_text(sample_sql)
+        
+        return editor
+    
+    def close_query_tab(self, index):
+        """Close a query tab"""
+        if self.query_tabs.count() > 1:  # Keep at least one tab
+            self.query_tabs.removeTab(index)
+        else:
+            # Don't allow closing the last tab - show a message instead
+            QMessageBox.information(self, "Cannot Close Tab", 
+                                  "Cannot close the last query tab. At least one tab must remain open.")
+            return
+    
+    def get_current_editor(self):
+        """Get the currently active SQL editor"""
+        current_widget = self.query_tabs.currentWidget()
+        if isinstance(current_widget, SQLEditor):
+            return current_widget
+        return None
+    
+    def get_current_tab_name(self):
+        """Get the name of the current tab"""
+        current_index = self.query_tabs.currentIndex()
+        return self.query_tabs.tabText(current_index)
+    
+    def set_current_tab_name(self, name):
+        """Set the name of the current tab"""
+        current_index = self.query_tabs.currentIndex()
+        self.query_tabs.setTabText(current_index, name)
+    
+    def update_all_editors_table_names(self, table_names):
+        """Update table names for autocomplete in all editor tabs"""
+        for i in range(self.query_tabs.count()):
+            editor = self.query_tabs.widget(i)
+            if isinstance(editor, SQLEditor):
+                editor.update_table_names(table_names)
+    
+    def apply_theme_to_all_editors(self, theme_name):
+        """Apply theme to all editor tabs"""
+        for i in range(self.query_tabs.count()):
+            editor = self.query_tabs.widget(i)
+            if isinstance(editor, SQLEditor):
+                editor.apply_theme(theme_name)
+    
+    def new_query(self):
+        """Create a new query tab"""
+        query_count = self.query_tabs.count() + 1
+        tab_name = f"Query {query_count}"
+        self.add_new_query_tab(tab_name)
+        self.log_message(f"Created new query tab: {tab_name}")
+    
+    def open_query(self):
+        """Open a saved query from JSON file"""
+        import os
+        
+        # Get queries directory
+        queries_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'queries')
+        
+        if not os.path.exists(queries_dir):
+            QMessageBox.information(self, "No Queries", "No saved queries found.")
+            return
+        
+        # Get list of saved queries
+        query_files = [f for f in os.listdir(queries_dir) if f.endswith('.json')]
+        
+        if not query_files:
+            QMessageBox.information(self, "No Queries", "No saved queries found.")
+            return
+        
+        # Show list of queries to choose from
+        query_names = [os.path.splitext(f)[0] for f in query_files]
+        query_name, ok = QInputDialog.getItem(
+            self,
+            "Open Query",
+            "Select a query to open:",
+            query_names,
+            0,
+            False
+        )
+        
+        if ok and query_name:
+            try:
+                import json
+                file_path = os.path.join(queries_dir, f"{query_name}.json")
+                
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    query_data = json.load(file)
+                
+                # Create new tab with query name
+                editor = self.add_new_query_tab(query_name)
+                editor.set_text(query_data['content'])
+                
+                # Store the query name for saving
+                editor.query_name = query_name
+                
+                self.log_message(f"Opened query: {query_name}")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open query: {str(e)}")
+    
+    def save_query_as(self):
+        """Save the current query with a new name"""
+        current_editor = self.get_current_editor()
+        if not current_editor:
+            return
+        
+        query_name, ok = QInputDialog.getText(
+            self,
+            "Save Query As",
+            "Enter query name:"
+        )
+        
+        if ok and query_name.strip():
+            query_name = query_name.strip()
+            if self._save_query_to_json(query_name, current_editor.get_text()):
+                current_editor.query_name = query_name
+                # Update tab title to show query name
+                self.set_current_tab_name(query_name)
+    
+    def _save_to_file(self, file_path, content):
+        """Helper method to save content to file"""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.write(content)
+            
+            import os
+            filename = os.path.basename(file_path)
+            self.log_message(f"Saved query to: {filename}")
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save file: {str(e)}")
+            return False
+    
+    def _save_query_to_json(self, query_name, content):
+        """Helper method to save query as JSON file"""
+        try:
+            import json
+            import os
+            from datetime import datetime
+            
+            # Create queries directory if it doesn't exist
+            queries_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'queries')
+            os.makedirs(queries_dir, exist_ok=True)
+            
+            # Create query data
+            query_data = {
+                'name': query_name,
+                'content': content,
+                'created_at': datetime.now().isoformat(),
+                'modified_at': datetime.now().isoformat()
+            }
+            
+            # Save to JSON file
+            file_path = os.path.join(queries_dir, f"{query_name}.json")
+            with open(file_path, 'w', encoding='utf-8') as file:
+                json.dump(query_data, file, indent=2, ensure_ascii=False)
+            
+            self.log_message(f"Saved query '{query_name}' to JSON file")
+            return True
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save query: {str(e)}")
+            return False
+    
+    def rename_current_query(self):
+        """Rename the current query tab"""
+        current_name = self.get_current_tab_name()
+        
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Query",
+            "Enter new name for the query:",
+            text=current_name
+        )
+        
+        if ok and new_name.strip():
+            self.set_current_tab_name(new_name.strip())
+            self.log_message(f"Renamed query tab to: {new_name.strip()}")
+    
+    def show_tab_context_menu(self, position):
+        """Show context menu for query tabs"""
+        tab_index = self.query_tabs.tabBar().tabAt(position)
+        if tab_index >= 0:
+            context_menu = QMenu(self)
+            
+            # Rename action
+            rename_action = context_menu.addAction("Rename Query")
+            rename_action.triggered.connect(lambda: self.rename_tab_at_index(tab_index))
+            
+            # Close action (only if more than one tab)
+            if self.query_tabs.count() > 1:
+                close_action = context_menu.addAction("Close Query")
+                close_action.triggered.connect(lambda: self.close_query_tab(tab_index))
+            
+            context_menu.exec(self.query_tabs.mapToGlobal(position))
+    
+    def rename_tab_at_index(self, index):
+        """Rename a specific tab by index"""
+        current_name = self.query_tabs.tabText(index)
+        
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Query",
+            "Enter new name for the query:",
+            text=current_name
+        )
+        
+        if ok and new_name.strip():
+            self.query_tabs.setTabText(index, new_name.strip())
+            self.log_message(f"Renamed query tab to: {new_name.strip()}")
         
     def setup_menu_bar(self):
         """Setup the application menu bar"""
@@ -2044,6 +2310,33 @@ SHOW TABLES;
         clear_action.triggered.connect(self.clear_results)
         query_menu.addAction(clear_action)
         
+        query_menu.addSeparator()
+        
+        # New Query
+        new_query_action = QAction('New Query', self)
+        new_query_action.setShortcut('Ctrl+N')
+        new_query_action.triggered.connect(self.new_query)
+        query_menu.addAction(new_query_action)
+        
+        # Open Query
+        open_query_action = QAction('Open Query...', self)
+        open_query_action.setShortcut('Ctrl+O')
+        open_query_action.triggered.connect(self.open_query)
+        query_menu.addAction(open_query_action)
+        
+        # Save Query As
+        save_query_as_action = QAction('Save Query As...', self)
+        save_query_as_action.setShortcut('Ctrl+Shift+S')
+        save_query_as_action.triggered.connect(self.save_query_as)
+        query_menu.addAction(save_query_as_action)
+        
+        query_menu.addSeparator()
+        
+        # Rename Query
+        rename_query_action = QAction('Rename Query...', self)
+        rename_query_action.triggered.connect(self.rename_current_query)
+        query_menu.addAction(rename_query_action)
+        
         # Database menu
         database_menu = menubar.addMenu('Database')
         
@@ -2090,6 +2383,11 @@ SHOW TABLES;
         execute_btn = QPushButton('Execute (F5)')
         execute_btn.clicked.connect(self.execute_query)
         toolbar.addWidget(execute_btn)
+        
+        # New Query button
+        new_query_btn = QPushButton('New Query')
+        new_query_btn.clicked.connect(self.new_query)
+        toolbar.addWidget(new_query_btn)
         
         toolbar.addSeparator()
         
@@ -2680,15 +2978,20 @@ SHOW TABLES;
                 except Exception as e:
                     self.log_message(f"Error refreshing tables for {db_name}: {e}")
             
-            # Update SQL editor autocomplete with all collected table names
-            self.sql_editor.update_table_names(all_table_names)
+            # Update SQL editor autocomplete with all collected table names for all tabs
+            self.update_all_editors_table_names(all_table_names)
                     
         except Exception as e:
             self.log_message(f"Error refreshing database tree: {e}")
             
     def execute_query(self):
         """Execute the SQL query in the editor"""
-        query = self.sql_editor.get_text().strip()
+        current_editor = self.get_current_editor()
+        if not current_editor:
+            self.log_message("No active query editor")
+            return
+            
+        query = current_editor.get_text().strip()
         
         if not query:
             self.log_message("No query to execute")
@@ -3026,9 +3329,9 @@ SHOW TABLES;
         self.setStyleSheet(stylesheet)
         self.theme_manager.set_theme(theme_name)
         
-        # Apply theme to SQL editor
-        if hasattr(self, 'sql_editor'):
-            self.sql_editor.apply_theme(theme_name)
+        # Apply theme to all SQL editors
+        if hasattr(self, 'query_tabs'):
+            self.apply_theme_to_all_editors(theme_name)
         
         self.log_message(f"Applied {theme_name.title()} theme")
     
