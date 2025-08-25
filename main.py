@@ -2377,6 +2377,16 @@ SHOW TABLES;
         export_excel_action.triggered.connect(self.export_results_excel)
         query_menu.addAction(export_excel_action)
         
+        export_json_action = QAction('Export Results as JSON...', self)
+        export_json_action.setShortcut('Ctrl+J')
+        export_json_action.triggered.connect(self.export_results_json)
+        query_menu.addAction(export_json_action)
+        
+        export_parquet_action = QAction('Export Results as Parquet...', self)
+        export_parquet_action.setShortcut('Ctrl+P')
+        export_parquet_action.triggered.connect(self.export_results_parquet)
+        query_menu.addAction(export_parquet_action)
+        
         query_menu.addSeparator()
         
         # New Query
@@ -3348,6 +3358,52 @@ SHOW TABLES;
             self.log_message(f"Error exporting to Excel: {e}")
             QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
     
+    def export_results_json(self):
+        """Export current query results to JSON file"""
+        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+            
+        # Get file path from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Results as JSON", 
+            "", 
+            "JSON Files (*.json)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            self.export_query_results(self.results_table.current_query, file_path, 'json')
+        except Exception as e:
+            self.log_message(f"Error exporting to JSON: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
+    
+    def export_results_parquet(self):
+        """Export current query results to Parquet file"""
+        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+            
+        # Get file path from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Results as Parquet", 
+            "", 
+            "Parquet Files (*.parquet)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            self.export_query_results(self.results_table.current_query, file_path, 'parquet')
+        except Exception as e:
+            self.log_message(f"Error exporting to Parquet: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
+    
     def export_query_results(self, query, file_path, format_type):
         """Execute query and export all results using streaming approach for efficiency"""
         self.log_message(f"Starting streaming export to {format_type.upper()}...")
@@ -3379,10 +3435,22 @@ SHOW TABLES;
                 copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT CSV, HEADER)"
                 self.query_stats_label.setText(f"Streaming to CSV... ({total_rows:,} rows)" if total_rows else "Streaming to CSV...")
                 
+            elif format_type == 'json':
+                # Use DuckDB's native JSON export with streaming
+                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT JSON)"
+                self.query_stats_label.setText(f"Streaming to JSON... ({total_rows:,} rows)" if total_rows else "Streaming to JSON...")
+                
+            elif format_type == 'parquet':
+                # Use DuckDB's native Parquet export with streaming
+                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT PARQUET)"
+                self.query_stats_label.setText(f"Streaming to Parquet... ({total_rows:,} rows)" if total_rows else "Streaming to Parquet...")
+                
             elif format_type == 'excel':
                 # For Excel, we need to use a different approach since DuckDB doesn't natively support Excel
                 # We'll use chunked processing with pandas for Excel files
                 return self._export_excel_chunked(processed_query, file_path, total_rows)
+            else:
+                raise ValueError(f"Unsupported export format: {format_type}")
             
             # Execute the streaming export
             import time
