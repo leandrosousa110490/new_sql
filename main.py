@@ -196,6 +196,137 @@ class DatabaseConnectionManager:
         self.settings.endArray()
 
 
+class CSVConfigDialog(QDialog):
+    """Simplified dialog for configuring CSV automation settings"""
+    
+    def __init__(self, parent=None, current_config=None):
+        super().__init__(parent)
+        self.current_config = current_config or {}
+        self.setWindowTitle("CSV Configuration")
+        self.setModal(True)
+        self.resize(400, 300)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Delimiter settings
+        delimiter_group = QGroupBox("Delimiter Settings")
+        delimiter_layout = QFormLayout(delimiter_group)
+        
+        self.delimiter_combo = QComboBox()
+        self.delimiter_combo.addItems([
+            "Comma (,)",
+            "Semicolon (;)",
+            "Tab",
+            "Pipe (|)",
+            "Custom"
+        ])
+        
+        # Set current delimiter
+        current_delim = self.current_config.get('delimiter', ',')
+        if current_delim == ',':
+            self.delimiter_combo.setCurrentIndex(0)
+        elif current_delim == ';':
+            self.delimiter_combo.setCurrentIndex(1)
+        elif current_delim == '\t':
+            self.delimiter_combo.setCurrentIndex(2)
+        elif current_delim == '|':
+            self.delimiter_combo.setCurrentIndex(3)
+        else:
+            self.delimiter_combo.setCurrentIndex(4)
+            
+        self.delimiter_combo.currentTextChanged.connect(self.on_delimiter_changed)
+        delimiter_layout.addRow("Delimiter:", self.delimiter_combo)
+        
+        self.custom_delimiter_edit = QLineEdit()
+        self.custom_delimiter_edit.setEnabled(current_delim not in [',', ';', '\t', '|'])
+        self.custom_delimiter_edit.setText(current_delim if current_delim not in [',', ';', '\t', '|'] else '')
+        delimiter_layout.addRow("Custom Delimiter:", self.custom_delimiter_edit)
+        
+        layout.addWidget(delimiter_group)
+        
+        # Additional options
+        options_group = QGroupBox("Additional Options")
+        options_layout = QFormLayout(options_group)
+        
+        self.header_check = QCheckBox("First row contains headers")
+        self.header_check.setChecked(self.current_config.get('has_header', True))
+        options_layout.addRow(self.header_check)
+        
+        self.quote_combo = QComboBox()
+        self.quote_combo.addItems(["Auto", '"', "'", "None"])
+        current_quote = self.current_config.get('quote_char', 'Auto')
+        if current_quote in ['"', "'", "None"]:
+            self.quote_combo.setCurrentText(current_quote)
+        options_layout.addRow("Quote Character:", self.quote_combo)
+        
+        self.encoding_combo = QComboBox()
+        self.encoding_combo.addItems(["UTF-8", "UTF-16", "ISO-8859-1", "Windows-1252"])
+        current_encoding = self.current_config.get('encoding', 'utf8')
+        if current_encoding == 'utf8':
+            self.encoding_combo.setCurrentText("UTF-8")
+        elif current_encoding in ["UTF-16", "ISO-8859-1", "Windows-1252"]:
+            self.encoding_combo.setCurrentText(current_encoding)
+        options_layout.addRow("Encoding:", self.encoding_combo)
+        
+        layout.addWidget(options_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        ok_button = QPushButton("OK")
+        ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(ok_button)
+        
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        
+    def on_delimiter_changed(self, text):
+        """Handle delimiter combo box changes"""
+        is_custom = text == "Custom"
+        self.custom_delimiter_edit.setEnabled(is_custom)
+        if not is_custom:
+            self.custom_delimiter_edit.clear()
+            
+    def get_config(self):
+        """Get the current configuration as a dictionary"""
+        delimiter_text = self.delimiter_combo.currentText()
+        
+        if delimiter_text == "Comma (,)":
+            delimiter = ','
+        elif delimiter_text == "Semicolon (;)":
+            delimiter = ';'
+        elif delimiter_text == "Tab":
+            delimiter = '\t'
+        elif delimiter_text == "Pipe (|)":
+            delimiter = '|'
+        else:  # Custom
+            delimiter = self.custom_delimiter_edit.text() or ','
+            
+        quote_text = self.quote_combo.currentText()
+        quote_char = None if quote_text in ["Auto", "None"] else quote_text
+        
+        encoding_text = self.encoding_combo.currentText()
+        encoding_map = {
+            "UTF-8": "utf8",
+            "UTF-16": "utf16",
+            "ISO-8859-1": "iso-8859-1",
+            "Windows-1252": "windows-1252"
+        }
+        encoding = encoding_map.get(encoding_text, "utf8")
+        
+        return {
+            'delimiter': delimiter,
+            'has_header': self.header_check.isChecked(),
+            'quote_char': quote_char,
+            'encoding': encoding
+        }
+
+
 class CSVImportDialog(QDialog):
     """Dialog for configuring CSV import settings"""
     
@@ -1778,6 +1909,745 @@ class SQLEditor(QWidget):
         return themes.get(theme_name, themes['light'])
 
 
+class AutomationWidget(QWidget):
+    """Widget for automation configuration and file loading"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_gui = parent
+        self.selected_files = []  # List of selected files/folders
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """Setup the automation widget UI"""
+        layout = QVBoxLayout(self)
+        
+        # Title
+        title_label = QLabel("Automation Configuration")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        layout.addWidget(title_label)
+        
+        # File Selection Group
+        file_group = QGroupBox("File/Folder Selection")
+        file_layout = QVBoxLayout(file_group)
+        
+        # Selection buttons
+        button_layout = QHBoxLayout()
+        
+        self.add_csv_file_btn = QPushButton("Add CSV File")
+        self.add_csv_file_btn.clicked.connect(self.add_csv_file)
+        button_layout.addWidget(self.add_csv_file_btn)
+        
+        self.add_excel_file_btn = QPushButton("Add Excel File")
+        self.add_excel_file_btn.clicked.connect(self.add_excel_file)
+        button_layout.addWidget(self.add_excel_file_btn)
+        
+        self.add_csv_folder_btn = QPushButton("Add CSV Folder")
+        self.add_csv_folder_btn.clicked.connect(self.add_csv_folder)
+        button_layout.addWidget(self.add_csv_folder_btn)
+        
+        self.add_excel_folder_btn = QPushButton("Add Excel Folder")
+        self.add_excel_folder_btn.clicked.connect(self.add_excel_folder)
+        button_layout.addWidget(self.add_excel_folder_btn)
+        
+        # Second row of buttons for JSON and Parquet
+        button_layout2 = QHBoxLayout()
+        
+        self.add_json_file_btn = QPushButton("Add JSON File")
+        self.add_json_file_btn.clicked.connect(self.add_json_file)
+        button_layout2.addWidget(self.add_json_file_btn)
+        
+        self.add_parquet_file_btn = QPushButton("Add Parquet File")
+        self.add_parquet_file_btn.clicked.connect(self.add_parquet_file)
+        button_layout2.addWidget(self.add_parquet_file_btn)
+        
+        self.add_jupyter_file_btn = QPushButton("Add Jupyter Notebook")
+        self.add_jupyter_file_btn.clicked.connect(self.add_jupyter_file)
+        button_layout2.addWidget(self.add_jupyter_file_btn)
+        
+        # Add spacer to align with first row
+        button_layout2.addWidget(QLabel())  # Spacer
+        
+        file_layout.addLayout(button_layout)
+        file_layout.addLayout(button_layout2)
+        
+        # Selected files list
+        self.files_list = QTreeWidget()
+        self.files_list.setHeaderLabels(["Type", "Path", "Table Name", "Config", "Status"])
+        self.files_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files_list.customContextMenuRequested.connect(self.show_file_context_menu)
+        file_layout.addWidget(self.files_list)
+        
+        layout.addWidget(file_group)
+        
+        # Trigger Configuration Group
+        trigger_group = QGroupBox("Trigger Configuration")
+        trigger_layout = QVBoxLayout(trigger_group)
+        
+        # Buttons in horizontal layout
+        buttons_layout = QHBoxLayout()
+        
+        # Manual trigger button
+        self.load_all_btn = QPushButton("Load All Files Now")
+        self.load_all_btn.clicked.connect(self.load_all_files)
+        self.load_all_btn.setMaximumWidth(150)
+        buttons_layout.addWidget(self.load_all_btn)
+        
+        # Save automation button
+        self.save_automation_btn = QPushButton("Save Automation")
+        self.save_automation_btn.clicked.connect(self.save_automation)
+        self.save_automation_btn.setMaximumWidth(120)
+        buttons_layout.addWidget(self.save_automation_btn)
+        
+        # Clear button
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.clicked.connect(self.clear_all_files)
+        self.clear_btn.setMaximumWidth(80)
+        buttons_layout.addWidget(self.clear_btn)
+        
+        trigger_layout.addLayout(buttons_layout)
+        
+        # Save/Load automation section
+        save_load_layout = QVBoxLayout()
+        
+        # Load automation dropdown
+        load_layout = QHBoxLayout()
+        load_label = QLabel("Load Automation:")
+        load_layout.addWidget(load_label)
+        
+        self.automation_dropdown = QComboBox()
+        self.automation_dropdown.addItem("Select saved automation...")
+        self.automation_dropdown.currentTextChanged.connect(self.load_selected_automation)
+        load_layout.addWidget(self.automation_dropdown)
+        
+        # Initialize dropdown with available automations
+        self.refresh_automation_dropdown()
+        
+        # Refresh button for dropdown
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.clicked.connect(self.refresh_automation_dropdown)
+        refresh_btn.setMaximumWidth(80)
+        load_layout.addWidget(refresh_btn)
+        
+        save_load_layout.addLayout(load_layout)
+        trigger_layout.addLayout(save_load_layout)
+        
+        # Status area
+        self.status_text = QTextEdit()
+        self.status_text.setMaximumHeight(100)
+        self.status_text.setReadOnly(True)
+        self.status_text.setPlaceholderText("Automation status will appear here...")
+        trigger_layout.addWidget(self.status_text)
+        
+        layout.addWidget(trigger_group)
+        
+        # Stretch to fill remaining space
+        layout.addStretch()
+    
+    def add_csv_file(self):
+        """Add a CSV file to the automation list"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select CSV File", "", "CSV Files (*.csv)"
+        )
+        if file_path:
+            self.add_file_to_list("CSV File", file_path)
+    
+    def add_excel_file(self):
+        """Add an Excel file to the automation list"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Excel File", "", "Excel Files (*.xlsx *.xls)"
+        )
+        if file_path:
+            self.add_file_to_list("Excel File", file_path)
+    
+    def add_csv_folder(self):
+        """Add a CSV folder to the automation list"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select CSV Folder"
+        )
+        if folder_path:
+            self.add_file_to_list("CSV Folder", folder_path)
+    
+    def add_excel_folder(self):
+        """Add an Excel folder to the automation list"""
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select Excel Folder"
+        )
+        if folder_path:
+            self.add_file_to_list("Excel Folder", folder_path)
+    
+    def add_json_file(self):
+        """Add a JSON file to the automation list"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select JSON File", "", "JSON Files (*.json)"
+        )
+        if file_path:
+            self.add_file_to_list("JSON File", file_path)
+    
+    def add_parquet_file(self):
+        """Add a Parquet file to the automation list"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Parquet File", "", "Parquet Files (*.parquet *.pq)"
+        )
+        if file_path:
+            self.add_file_to_list("Parquet File", file_path)
+    
+    def add_jupyter_file(self):
+        """Add a Jupyter notebook file to the automation list"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Jupyter Notebook", "", "Jupyter Notebooks (*.ipynb)"
+        )
+        if file_path:
+            self.add_file_to_list("Jupyter Notebook", file_path)
+    
+    def refresh_automation_dropdown(self):
+        """Refresh the automation dropdown with available saved automations"""
+        import os
+        
+        # Clear current items except the first placeholder
+        self.automation_dropdown.clear()
+        self.automation_dropdown.addItem("Select saved automation...")
+        
+        # Get automations folder
+        automations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automations")
+        
+        if os.path.exists(automations_dir):
+            # Add all .json files in the automations folder
+            for filename in os.listdir(automations_dir):
+                if filename.endswith('.json'):
+                    self.automation_dropdown.addItem(filename[:-5])  # Remove .json extension
+    
+    def load_selected_automation(self, automation_name):
+        """Load the selected automation from dropdown"""
+        if automation_name == "Select saved automation..." or not automation_name:
+            return
+        
+        import os
+        import json
+        
+        # Construct file path
+        automations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automations")
+        file_path = os.path.join(automations_dir, f"{automation_name}.json")
+        
+        if not os.path.exists(file_path):
+            self.log_status(f"Error: Automation file not found: {automation_name}.json")
+            return
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                automation_data = json.load(f)
+            
+            # Validate JSON structure
+            if "files" not in automation_data:
+                raise ValueError("Invalid automation file format: missing 'files' key")
+            
+            # Clear current list
+            self.files_list.clear()
+            self.selected_files.clear()
+            
+            # Load files from JSON
+            loaded_count = 0
+            skipped_count = 0
+            
+            for file_data in automation_data["files"]:
+                file_path_to_check = file_data.get("path", "")
+                
+                # Check if file/folder exists
+                if not os.path.exists(file_path_to_check):
+                    self.log_status(f"Warning: File/folder not found, skipping: {file_path_to_check}")
+                    skipped_count += 1
+                    continue
+                
+                # Create tree item
+                item = QTreeWidgetItem([
+                    file_data.get("type", "Unknown"),
+                    file_path_to_check,
+                    file_data.get("table_name", ""),
+                    self._format_config_display(file_data.get("config", {})),
+                    "Ready"
+                ])
+                
+                # Store configuration data
+                item.setData(0, Qt.ItemDataRole.UserRole, file_data.get("config", {}))
+                
+                self.files_list.addTopLevelItem(item)
+                
+                # Add to selected_files list
+                file_info = {
+                    'type': file_data.get("type", "Unknown"),
+                    'path': file_path_to_check,
+                    'table_name': file_data.get("table_name", ""),
+                    'config': file_data.get("config", {}),
+                    'item': item
+                }
+                self.selected_files.append(file_info)
+                loaded_count += 1
+            
+            # Resize columns
+            for i in range(5):
+                self.files_list.resizeColumnToContents(i)
+            
+            # Reset dropdown to placeholder
+            self.automation_dropdown.setCurrentIndex(0)
+            
+            # Log results
+            if loaded_count > 0:
+                self.log_status(f"Loaded {loaded_count} files from automation: {automation_name}")
+            if skipped_count > 0:
+                self.log_status(f"Skipped {skipped_count} missing files")
+                
+        except Exception as e:
+            error_msg = f"Error loading automation {automation_name}: {str(e)}"
+            self.log_status(error_msg)
+            QMessageBox.critical(self, "Load Error", error_msg)
+    
+    def add_file_to_list(self, file_type, file_path):
+        """Add a file or folder to the automation list"""
+        # Generate table name from file/folder path
+        path_obj = Path(file_path)
+        if file_type.endswith("Folder"):
+            table_name = f"{path_obj.name}_data"
+        else:
+            table_name = path_obj.stem
+        
+        # Set default configuration based on file type
+        config_text = "Default"
+        config_data = {}
+        
+        if "CSV" in file_type:
+            config_data = {'delimiter': ','}
+            config_text = "Delimiter: ,"
+        elif "Excel" in file_type:
+            config_data = {'sheet_name': None}
+            config_text = "Sheet: Auto"
+        elif "JSON" in file_type:
+            config_data = {}
+            config_text = "Default"
+        elif "Parquet" in file_type:
+            config_data = {}
+            config_text = "Default"
+        elif "Jupyter" in file_type:
+            config_data = {}
+            config_text = "Execute notebook"
+        
+        # Create tree item
+        item = QTreeWidgetItem(self.files_list)
+        item.setText(0, file_type)
+        item.setText(1, file_path)
+        item.setText(2, table_name)
+        item.setText(3, config_text)
+        item.setText(4, "Ready")
+        
+        # Store file info
+        file_info = {
+            'type': file_type,
+            'path': file_path,
+            'table_name': table_name,
+            'config': config_data,
+            'item': item
+        }
+        self.selected_files.append(file_info)
+        
+        # Resize columns to fit content
+        self.files_list.resizeColumnToContents(0)
+        self.files_list.resizeColumnToContents(1)
+        self.files_list.resizeColumnToContents(2)
+        self.files_list.resizeColumnToContents(3)
+        
+        self.log_status(f"Added {file_type}: {file_path}")
+    
+    def show_file_context_menu(self, position):
+        """Show context menu for file list"""
+        item = self.files_list.itemAt(position)
+        if item:
+            menu = QMenu(self)
+            
+            remove_action = menu.addAction("Remove")
+            edit_table_name_action = menu.addAction("Edit Table Name")
+            
+            # Add configuration options based on file type
+            file_type = item.text(0)
+            config_action = None
+            
+            if "CSV" in file_type:
+                config_action = menu.addAction("Configure CSV Delimiter")
+            elif "Excel" in file_type:
+                config_action = menu.addAction("Configure Excel Sheet")
+            
+            action = menu.exec(self.files_list.mapToGlobal(position))
+            
+            if action == remove_action:
+                self.remove_file_item(item)
+            elif action == edit_table_name_action:
+                self.edit_table_name(item)
+            elif action == config_action:
+                self.configure_file_options(item)
+    
+    def remove_file_item(self, item):
+        """Remove a file item from the list"""
+        # Find and remove from selected_files list
+        for i, file_info in enumerate(self.selected_files):
+            if file_info['item'] == item:
+                self.selected_files.pop(i)
+                break
+        
+        # Remove from tree widget
+        index = self.files_list.indexOfTopLevelItem(item)
+        if index >= 0:
+            self.files_list.takeTopLevelItem(index)
+        
+        self.log_status(f"Removed: {item.text(1)}")
+    
+    def edit_table_name(self, item):
+        """Edit the table name for a file item"""
+        current_name = item.text(2)
+        new_name, ok = QInputDialog.getText(
+            self, "Edit Table Name", "Table Name:", text=current_name
+        )
+        
+        if ok and new_name.strip():
+            # Update item
+            item.setText(2, new_name.strip())
+            
+            # Update selected_files list
+            for file_info in self.selected_files:
+                if file_info['item'] == item:
+                    file_info['table_name'] = new_name.strip()
+                    break
+            
+            self.log_status(f"Updated table name to: {new_name.strip()}")
+    
+    def configure_file_options(self, item):
+        """Configure file-specific options like CSV delimiter or Excel sheet"""
+        file_type = item.text(0)
+        
+        # Find the file info
+        file_info = None
+        for info in self.selected_files:
+            if info['item'] == item:
+                file_info = info
+                break
+        
+        if not file_info:
+            return
+        
+        if "CSV" in file_type:
+            # Configure CSV options with a comprehensive dialog
+            dialog = CSVConfigDialog(self, file_info['config'])
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                # Update configuration with all CSV settings
+                config = dialog.get_config()
+                file_info['config'].update(config)
+                
+                # Update display text with key settings
+                config_text = f"Delimiter: {repr(config.get('delimiter', ','))}"
+                if config.get('quote_char'):
+                    config_text += f", Quote: {repr(config['quote_char'])}"
+                if not config.get('has_header', True):
+                    config_text += ", No Header"
+                if config.get('encoding', 'utf8') != 'utf8':
+                    config_text += f", Encoding: {config['encoding']}"
+                    
+                item.setText(3, config_text)
+                self.log_status(f"Updated CSV configuration: {config_text}")
+        
+        elif "Excel" in file_type:
+            # Configure Excel sheet name
+            current_sheet = file_info['config'].get('sheet_name', None)
+            sheet_text = current_sheet if current_sheet else ""
+            
+            sheet_name, ok = QInputDialog.getText(
+                self, "Configure Excel Sheet", 
+                "Enter sheet name (leave empty for auto-detection):", 
+                text=sheet_text
+            )
+            
+            if ok:
+                if sheet_name.strip():
+                    file_info['config']['sheet_name'] = sheet_name.strip()
+                    item.setText(3, f"Sheet: {sheet_name.strip()}")
+                    self.log_status(f"Updated Excel sheet to: {sheet_name.strip()}")
+                else:
+                    file_info['config']['sheet_name'] = None
+                    item.setText(3, "Sheet: Auto")
+                    self.log_status("Updated Excel sheet to auto-detection")
+    
+    def load_all_files(self):
+        """Load all files in the automation list"""
+        if not self.selected_files:
+            self.log_status("No files selected for loading.")
+            return
+        
+        self.log_status(f"Starting to load {len(self.selected_files)} items...")
+        
+        for file_info in self.selected_files:
+            try:
+                file_info['item'].setText(3, "Loading...")
+                self.load_single_file(file_info)
+                file_info['item'].setText(3, "Loaded")
+            except Exception as e:
+                file_info['item'].setText(3, "Error")
+                self.log_status(f"Error loading {file_info['path']}: {str(e)}")
+        
+        # Refresh database tree
+        if self.parent_gui:
+            self.parent_gui.refresh_database_tree()
+        
+        self.log_status("Finished loading all files.")
+    
+    def load_single_file(self, file_info):
+        """Load a single file or folder"""
+        file_type = file_info['type']
+        file_path = file_info['path']
+        table_name = file_info['table_name']
+        config = file_info.get('config', {})
+        
+        if file_type == "CSV File":
+            delimiter = config.get('delimiter', ',')
+            self.parent_gui.load_csv_file_with_delimiter(file_path, table_name, delimiter)
+        elif file_type == "Excel File":
+            sheet_name = config.get('sheet_name', None)
+            self.parent_gui.load_excel_file_with_sheet(file_path, table_name, sheet_name)
+        elif file_type == "CSV Folder":
+            delimiter = config.get('delimiter', ',')
+            quote_char = config.get('quote_char', None)
+            has_header = config.get('has_header', True)
+            encoding = config.get('encoding', 'utf8')
+            self.parent_gui.load_csv_folder_with_delimiter(file_path, table_name, delimiter, quote_char, has_header, encoding)
+        elif file_type == "Excel Folder":
+            sheet_name = config.get('sheet_name', None)
+            self.parent_gui.load_excel_folder(file_path, table_name, sheet_name)
+        elif file_type == "JSON File":
+            self.parent_gui.load_json_file(file_path, table_name)
+        elif file_type == "Parquet File":
+            self.parent_gui.load_parquet_file(file_path, table_name)
+        elif file_type == "Jupyter Notebook":
+            self.execute_jupyter_notebook(file_path)
+        
+        if file_type != "Jupyter Notebook":
+            self.log_status(f"Loaded {file_type}: {file_path} as table '{table_name}'")
+        else:
+            self.log_status(f"Executed {file_type}: {file_path}")
+    
+    def execute_jupyter_notebook(self, notebook_path):
+        """Execute a Jupyter notebook file"""
+        import subprocess
+        import os
+        
+        try:
+            # Check if jupyter is available
+            result = subprocess.run(['jupyter', '--version'], capture_output=True, text=True)
+            if result.returncode != 0:
+                raise Exception("Jupyter is not installed or not available in PATH")
+            
+            # Execute the notebook
+            self.log_status(f"Executing Jupyter notebook: {notebook_path}")
+            
+            # Use nbconvert to execute the notebook
+            cmd = [
+                'jupyter', 'nbconvert', 
+                '--to', 'notebook',
+                '--execute',
+                '--inplace',
+                notebook_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(notebook_path))
+            
+            if result.returncode == 0:
+                self.log_status(f"Successfully executed notebook: {os.path.basename(notebook_path)}")
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                self.log_status(f"Error executing notebook {os.path.basename(notebook_path)}: {error_msg}")
+                raise Exception(f"Notebook execution failed: {error_msg}")
+                
+        except FileNotFoundError:
+            error_msg = "Jupyter not found. Please install Jupyter: pip install jupyter"
+            self.log_status(error_msg)
+            raise Exception(error_msg)
+        except Exception as e:
+            error_msg = f"Error executing notebook: {str(e)}"
+            self.log_status(error_msg)
+            raise Exception(error_msg)
+    
+    def clear_all_files(self):
+        """Clear all files from the automation list"""
+        if self.files_list.topLevelItemCount() == 0:
+            self.log_status("No files to clear.")
+            return
+        
+        # Ask for confirmation
+        reply = QMessageBox.question(
+            self, 
+            "Clear All Files", 
+            f"Are you sure you want to clear all {self.files_list.topLevelItemCount()} files from the automation list?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear the tree widget
+            self.files_list.clear()
+            
+            # Clear the selected files list
+            self.selected_files.clear()
+            
+            self.log_status("All files cleared from automation list.")
+    
+    def log_status(self, message):
+        """Log a status message"""
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.status_text.append(f"[{timestamp}] {message}")
+    
+    def save_automation(self):
+        """Save current automation configuration to JSON file"""
+        if self.files_list.topLevelItemCount() == 0:
+            QMessageBox.information(self, "No Files", "No files to save. Please add files to the automation list first.")
+            return
+        
+        # Get filename from user
+        filename, ok = QInputDialog.getText(
+            self, "Save Automation", "Enter automation name (without .json extension):"
+        )
+        
+        if not ok or not filename.strip():
+            return
+        
+        # Ensure .json extension
+        if not filename.endswith('.json'):
+            filename += '.json'
+        
+        # Create full path in automations folder
+        import os
+        automations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automations")
+        file_path = os.path.join(automations_dir, filename)
+        
+        try:
+            automation_data = {
+                "version": "1.0",
+                "files": []
+            }
+            
+            # Serialize all files in the list
+            for i in range(self.files_list.topLevelItemCount()):
+                item = self.files_list.topLevelItem(i)
+                file_data = {
+                    "type": item.text(0),
+                    "path": item.text(1),
+                    "table_name": item.text(2),
+                    "config": item.data(0, Qt.ItemDataRole.UserRole) or {}
+                }
+                automation_data["files"].append(file_data)
+            
+            # Write to JSON file
+            import json
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(automation_data, f, indent=2, ensure_ascii=False)
+            
+            self.log_status(f"Automation configuration saved to {file_path}")
+            QMessageBox.information(self, "Success", f"Automation configuration saved successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Error saving automation configuration: {str(e)}"
+            self.log_status(error_msg)
+            QMessageBox.critical(self, "Save Error", error_msg)
+    
+    def load_automation(self):
+        """Load automation configuration from JSON file"""
+        import os
+        automations_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "automations")
+        
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Automation Configuration", automations_dir, "JSON Files (*.json)"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            import json
+            import os
+            
+            with open(file_path, 'r', encoding='utf-8') as f:
+                automation_data = json.load(f)
+            
+            # Validate JSON structure
+            if "files" not in automation_data:
+                raise ValueError("Invalid automation file format: missing 'files' key")
+            
+            # Clear current list
+            self.files_list.clear()
+            
+            # Load files from JSON
+            loaded_count = 0
+            skipped_count = 0
+            
+            for file_data in automation_data["files"]:
+                file_path_to_check = file_data.get("path", "")
+                
+                # Check if file/folder exists
+                if not os.path.exists(file_path_to_check):
+                    self.log_status(f"Warning: File/folder not found, skipping: {file_path_to_check}")
+                    skipped_count += 1
+                    continue
+                
+                # Create tree item
+                item = QTreeWidgetItem([
+                    file_data.get("type", "Unknown"),
+                    file_path_to_check,
+                    file_data.get("table_name", ""),
+                    self._format_config_display(file_data.get("config", {})),
+                    "Ready"
+                ])
+                
+                # Store configuration data
+                item.setData(0, Qt.ItemDataRole.UserRole, file_data.get("config", {}))
+                
+                self.files_list.addTopLevelItem(item)
+                loaded_count += 1
+            
+            # Resize columns
+            for i in range(self.files_list.columnCount()):
+                self.files_list.resizeColumnToContents(i)
+            
+            success_msg = f"Loaded {loaded_count} files from automation configuration"
+            if skipped_count > 0:
+                success_msg += f" ({skipped_count} files skipped - not found)"
+            
+            self.log_status(success_msg)
+            QMessageBox.information(self, "Success", success_msg)
+            
+        except Exception as e:
+            error_msg = f"Error loading automation configuration: {str(e)}"
+            self.log_status(error_msg)
+            QMessageBox.critical(self, "Load Error", error_msg)
+    
+    def _format_config_display(self, config):
+        """Format configuration data for display in the Config column"""
+        if not config:
+            return "Default"
+        
+        display_parts = []
+        if "delimiter" in config:
+            delimiter = config["delimiter"]
+            if delimiter == "\t":
+                display_parts.append("Tab")
+            elif delimiter == " ":
+                display_parts.append("Space")
+            else:
+                display_parts.append(f"'{delimiter}'")
+        
+        if "sheet_name" in config:
+            sheet = config["sheet_name"]
+            if sheet:
+                display_parts.append(f"Sheet: {sheet}")
+            else:
+                display_parts.append("Auto-detect")
+        
+        return ", ".join(display_parts) if display_parts else "Default"
+
+
 class ResultsTableWidget(QWidget):
     """Custom widget for displaying paginated query results"""
     
@@ -2020,6 +2890,11 @@ class DuckDBGUI(QMainWindow):
         self.messages_text.setMaximumHeight(150)
         self.messages_text.setReadOnly(True)
         self.results_tabs.addTab(self.messages_text, "Messages")
+        
+        # Automation tab
+        self.automation_widget = AutomationWidget()
+        self.automation_widget.parent_gui = self
+        self.results_tabs.addTab(self.automation_widget, "Automation")
         
         right_splitter.addWidget(self.results_tabs)
         
@@ -2676,6 +3551,104 @@ SHOW TABLES;
         """Load Parquet file using DuckDB"""
         query = f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{file_path}')"
         self.connection.execute(query)
+    
+    def load_csv_file_with_delimiter(self, file_path: str, table_name: str, delimiter: str = ','):
+        """Load CSV file with specified delimiter"""
+        try:
+            query = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}', delim='{delimiter}')"
+            self.connection.execute(query)
+        except Exception as e:
+            # If there's a conversion error, try loading all columns as text
+            self.log_message(f"Initial auto-load failed: {str(e)}. Retrying with all columns as text...")
+            try:
+                query_with_text = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}', delim='{delimiter}', ALL_VARCHAR=true)"
+                self.connection.execute(query_with_text)
+                self.log_message(f"Successfully loaded {file_path} as table '{table_name}' with all columns as text")
+            except Exception as e2:
+                # Re-raise the original error if text loading also fails
+                raise e
+    
+    def load_excel_file_with_sheet(self, file_path: str, table_name: str, sheet_name: str = None):
+        """Load Excel file with specified sheet name"""
+        # Use Polars to read Excel file with specified sheet
+        if sheet_name:
+            df = pl.read_excel(file_path, sheet_name=sheet_name)
+        else:
+            df = pl.read_excel(file_path)  # First sheet by default
+        
+        # Convert to DuckDB table
+        self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM df")
+    
+    def load_csv_folder_with_delimiter(self, folder_path: str, table_name: str, delimiter: str = ',', quote_char: str = None, has_header: bool = True, encoding: str = 'utf8'):
+        """Load all CSV files from a folder with specified delimiter for automation"""
+        if not POLARS_AVAILABLE:
+            raise Exception("Polars library is required for folder loading feature")
+        
+        try:
+            import os
+            import glob
+            
+            # Find all CSV files in the folder
+            csv_files = glob.glob(os.path.join(folder_path, '*.csv'))
+                
+            if not csv_files:
+                raise Exception("No CSV files found in the selected folder")
+            
+            # Make sure table name is unique
+            table_name = self.get_unique_table_name(table_name)
+            
+            # Load and combine all CSV files
+            combined_df = None
+            loaded_files = []
+            
+            for file_path in csv_files:
+                try:
+                    # Read CSV with Polars using the configured settings
+                    read_options = {
+                        'has_header': has_header,
+                        'encoding': encoding
+                    }
+                    
+                    # Add separator if specified
+                    if delimiter is not None:
+                        read_options['separator'] = delimiter
+                    
+                    # Add quote character if specified
+                    if quote_char is not None:
+                        read_options['quote_char'] = quote_char
+                    
+                    df = pl.read_csv(file_path, **read_options)
+                    
+                    # Add source file column
+                    df = df.with_columns(pl.lit(os.path.basename(file_path)).alias('_source_file'))
+                    
+                    if combined_df is None:
+                        combined_df = df
+                    else:
+                        # Use concat with how='diagonal' to handle different schemas
+                        combined_df = pl.concat([combined_df, df], how='diagonal')
+                    
+                    loaded_files.append(os.path.basename(file_path))
+                    
+                except Exception as e:
+                    self.log_message(f"Warning: Could not load {os.path.basename(file_path)}: {str(e)}")
+                    continue
+            
+            if combined_df is None or combined_df.height == 0:
+                raise Exception("No data could be loaded from any CSV files in the folder")
+                
+            # Create table in DuckDB
+            self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM combined_df")
+            
+            # Log success message
+            success_msg = f"Successfully loaded {len(loaded_files)} CSV files into table '{table_name}': {', '.join(loaded_files)}"
+            self.log_message(success_msg)
+            self.refresh_database_tree()
+            
+        except Exception as e:
+            error_msg = f"Error loading CSV folder: {str(e)}"
+            self.log_message(error_msg)
+            raise Exception(error_msg)
         
     def load_folder(self):
         """Load all Excel files from a selected folder"""
@@ -2808,6 +3781,92 @@ SHOW TABLES;
             error_msg = f"Error loading folder: {str(e)}"
             self.log_message(error_msg)
             QMessageBox.critical(self, "Load Error", error_msg)
+    
+    def load_excel_folder(self, folder_path: str, table_name: str, sheet_name: str = None):
+        """Load all Excel files from a specified folder for automation"""
+        if not POLARS_AVAILABLE:
+            raise Exception("Polars library is required for folder loading feature")
+            
+        try:
+            import os
+            import glob
+            
+            # Find all Excel files in the folder
+            excel_extensions = ['*.xlsx', '*.xls']
+            excel_files = []
+            
+            for ext in excel_extensions:
+                excel_files.extend(glob.glob(os.path.join(folder_path, ext)))
+                
+            if not excel_files:
+                raise Exception("No Excel files found in the selected folder")
+            
+            # Make sure table name is unique
+            table_name = self.get_unique_table_name(table_name)
+            
+            # Load and combine all Excel files with automatic text conversion for schema conflicts
+            combined_df = None
+            loaded_files = []
+            schema_conflicts_detected = False
+            
+            for file_path in excel_files:
+                try:
+                    # Read Excel file with Polars, using specified sheet
+                    if sheet_name:
+                        df = pl.read_excel(file_path, sheet_name=sheet_name)
+                    else:
+                        df = pl.read_excel(file_path)  # Use first sheet
+                    
+                    # Convert all columns to text to avoid schema conflicts
+                    # This ensures consistent data types across all files
+                    text_columns = []
+                    for col in df.columns:
+                        text_columns.append(pl.col(col).cast(pl.Utf8).alias(col))
+                    
+                    df = df.select(text_columns)
+                    
+                    # Add source file column
+                    df = df.with_columns(
+                        pl.lit(os.path.basename(file_path)).alias('_source_file')
+                    )
+                    
+                    if combined_df is None:
+                        combined_df = df
+                    else:
+                        try:
+                            # Try to concatenate normally first
+                            combined_df = pl.concat([combined_df, df], how='vertical')
+                        except Exception:
+                            # If vertical concat fails, use diagonal (handles different column sets)
+                            combined_df = pl.concat([combined_df, df], how='diagonal')
+                            schema_conflicts_detected = True
+                    
+                    loaded_files.append(os.path.basename(file_path))
+                    
+                except Exception as e:
+                    self.log_message(f"Warning: Could not load {os.path.basename(file_path)} (sheet: {sheet_name or 'first'}): {str(e)}")
+                    continue
+            
+            if combined_df is None or combined_df.height == 0:
+                raise Exception("No data could be loaded from any Excel files in the folder")
+                
+            # Create table in DuckDB
+            self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM combined_df")
+            
+            # Log success message with information about text conversion
+            success_msg = f"Successfully loaded {len(loaded_files)} Excel files into table '{table_name}': {', '.join(loaded_files)}"
+            if schema_conflicts_detected:
+                success_msg += "\nNote: Different column schemas detected - all columns converted to text for compatibility."
+            else:
+                success_msg += "\nNote: All columns automatically converted to text to ensure data consistency."
+            
+            self.log_message(success_msg)
+            self.refresh_database_tree()
+            
+        except Exception as e:
+            error_msg = f"Error loading Excel folder: {str(e)}"
+            self.log_message(error_msg)
+            raise Exception(error_msg)
     
     def load_csv_folder(self):
         """Load all CSV files from a selected folder"""
