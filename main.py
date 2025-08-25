@@ -1914,7 +1914,8 @@ class ResultsTableWidget(QWidget):
         """Load a specific page of results"""
         if self.parent_gui and self.current_query:
             self.parent_gui.execute_paginated_query(self.current_query, page_number, self.page_size)
-            
+        
+
     def clear_results(self):
         """Clear the results table"""
         self.table.setRowCount(0)
@@ -2357,6 +2358,19 @@ SHOW TABLES;
         clear_action = QAction('Clear Results', self)
         clear_action.triggered.connect(self.clear_results)
         query_menu.addAction(clear_action)
+        
+        query_menu.addSeparator()
+        
+        # Export results
+        export_csv_action = QAction('Export Results as CSV...', self)
+        export_csv_action.setShortcut('Ctrl+E')
+        export_csv_action.triggered.connect(self.export_results_csv)
+        query_menu.addAction(export_csv_action)
+        
+        export_excel_action = QAction('Export Results as Excel...', self)
+        export_excel_action.setShortcut('Ctrl+Shift+E')
+        export_excel_action.triggered.connect(self.export_results_excel)
+        query_menu.addAction(export_excel_action)
         
         query_menu.addSeparator()
         
@@ -3252,6 +3266,185 @@ SHOW TABLES;
         self.query_worker.error.connect(self.on_query_error)
         self.query_worker.progress.connect(self.on_query_progress)
         self.query_worker.start()
+        
+    def export_results_csv(self):
+        """Export current query results to CSV file"""
+        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+            
+        # Get file path from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Results as CSV", 
+            "", 
+            "CSV Files (*.csv)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            self.export_query_results(self.results_table.current_query, file_path, 'csv')
+        except Exception as e:
+            self.log_message(f"Error exporting to CSV: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
+    
+    def export_results_excel(self):
+        """Export current query results to Excel file"""
+        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+            
+        # Get file path from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "Export Results as Excel", 
+            "", 
+            "Excel Files (*.xlsx)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            self.export_query_results(self.results_table.current_query, file_path, 'excel')
+        except Exception as e:
+            self.log_message(f"Error exporting to Excel: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
+    
+    def export_query_results(self, query, file_path, format_type):
+        """Execute query and export all results using streaming approach for efficiency"""
+        self.log_message(f"Starting streaming export to {format_type.upper()}...")
+        
+        # Show progress with enhanced status
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress initially
+        self.query_stats_label.setText(f"Initializing {format_type.upper()} export...")
+        
+        try:
+            # Preprocess the query to handle database context
+            processed_query = query
+            if self.current_database and self.current_database != 'local':
+                processed_query = f"USE {self.current_database}; {query}"
+            
+            # First, get row count for progress tracking
+            self.query_stats_label.setText("Counting rows...")
+            count_query = f"SELECT COUNT(*) FROM ({processed_query}) AS count_subquery"
+            try:
+                total_rows = self.connection.execute(count_query).fetchone()[0]
+                self.log_message(f"Found {total_rows:,} rows to export")
+            except Exception:
+                total_rows = None
+                self.log_message("Unable to determine row count, proceeding with export...")
+            
+            # Use DuckDB's native COPY TO for efficient streaming export
+            if format_type == 'csv':
+                # Use DuckDB's native CSV export with streaming
+                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT CSV, HEADER)"
+                self.query_stats_label.setText(f"Streaming to CSV... ({total_rows:,} rows)" if total_rows else "Streaming to CSV...")
+                
+            elif format_type == 'excel':
+                # For Excel, we need to use a different approach since DuckDB doesn't natively support Excel
+                # We'll use chunked processing with pandas for Excel files
+                return self._export_excel_chunked(processed_query, file_path, total_rows)
+            
+            # Execute the streaming export
+            import time
+            start_time = time.time()
+            self.connection.execute(copy_query)
+            end_time = time.time()
+            
+            export_time = end_time - start_time
+            
+            # Log success with performance metrics
+            if total_rows:
+                rows_per_second = total_rows / export_time if export_time > 0 else 0
+                self.log_message(f"Export completed: {total_rows:,} rows in {export_time:.2f}s ({rows_per_second:,.0f} rows/sec)")
+                success_msg = f"Successfully exported {total_rows:,} rows to {file_path}\n\nPerformance: {export_time:.2f} seconds ({rows_per_second:,.0f} rows/sec)"
+            else:
+                self.log_message(f"Export completed in {export_time:.2f}s")
+                success_msg = f"Successfully exported data to {file_path}\n\nTime: {export_time:.2f} seconds"
+            
+            # Show success message
+            QMessageBox.information(self, "Export Successful", success_msg)
+            
+        except Exception as e:
+            self.log_message(f"Export failed: {e}")
+            QMessageBox.critical(self, "Export Error", f"Failed to export data:\n\n{str(e)}")
+            raise e
+        finally:
+            self.progress_bar.setVisible(False)
+            self.query_stats_label.setText("Ready")
+    
+    def _export_excel_chunked(self, query, file_path, total_rows=None):
+        """Export large datasets to Excel using chunked processing"""
+        import pandas as pd
+        import time
+        
+        chunk_size = 100000  # Process 100K rows at a time
+        start_time = time.time()
+        
+        try:
+            # Create Excel writer
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                offset = 0
+                chunk_num = 1
+                total_exported = 0
+                
+                while True:
+                    # Update progress
+                    if total_rows:
+                        progress = min(100, (offset / total_rows) * 100)
+                        self.progress_bar.setRange(0, 100)
+                        self.progress_bar.setValue(int(progress))
+                        self.query_stats_label.setText(f"Exporting chunk {chunk_num} ({offset:,}/{total_rows:,} rows, {progress:.1f}%)")
+                    else:
+                        self.query_stats_label.setText(f"Exporting chunk {chunk_num} ({offset:,} rows processed)")
+                    
+                    # Get chunk of data
+                    chunk_query = f"{query} LIMIT {chunk_size} OFFSET {offset}"
+                    result = self.connection.execute(chunk_query).fetchall()
+                    
+                    if not result:
+                        break  # No more data
+                    
+                    # Convert to DataFrame
+                    if offset == 0:  # First chunk, get column names
+                        columns = [desc[0] for desc in self.connection.description]
+                    
+                    df_chunk = pd.DataFrame(result, columns=columns)
+                    
+                    # Write to Excel (append mode for subsequent chunks)
+                    if offset == 0:
+                        df_chunk.to_excel(writer, sheet_name='Data', index=False)
+                        startrow = len(df_chunk) + 1
+                    else:
+                        df_chunk.to_excel(writer, sheet_name='Data', index=False, 
+                                         header=False, startrow=startrow)
+                        startrow += len(df_chunk)
+                    
+                    total_exported += len(result)
+                    offset += chunk_size
+                    chunk_num += 1
+                    
+                    # Break if we got less than chunk_size (last chunk)
+                    if len(result) < chunk_size:
+                        break
+            
+            end_time = time.time()
+            export_time = end_time - start_time
+            rows_per_second = total_exported / export_time if export_time > 0 else 0
+            
+            self.log_message(f"Excel export completed: {total_exported:,} rows in {export_time:.2f}s ({rows_per_second:,.0f} rows/sec)")
+            
+            # Show success message
+            success_msg = f"Successfully exported {total_exported:,} rows to {file_path}\n\nPerformance: {export_time:.2f} seconds ({rows_per_second:,.0f} rows/sec)"
+            QMessageBox.information(self, "Export Successful", success_msg)
+            
+        except Exception as e:
+            self.log_message(f"Excel export failed: {e}")
+            raise e
         
     def clear_results(self):
         """Clear the results table and messages"""
