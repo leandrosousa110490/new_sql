@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QCompleter
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings, QStringListModel
-from PyQt6.QtGui import QAction, QIcon, QFont, QPixmap
+from PyQt6.QtGui import QAction, QIcon, QFont, QPixmap, QClipboard
 
 try:
     from PyQt6.Qsci import QsciScintilla, QsciLexerSQL
@@ -2671,6 +2671,11 @@ class ResultsTableWidget(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        
+        # Enable context menu
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_context_menu)
+        
         layout.addWidget(self.table)
         
         # Pagination controls
@@ -2801,6 +2806,123 @@ class ResultsTableWidget(QWidget):
         self.current_columns = []
         self.update_pagination_info()
         self.update_pagination_controls()
+        
+    def show_context_menu(self, position):
+        """Show context menu for copying data"""
+        if self.table.rowCount() == 0 or self.table.columnCount() == 0:
+            return
+            
+        menu = QMenu(self)
+        
+        # Get current selection
+        current_item = self.table.itemAt(position)
+        if current_item:
+            # Copy single value
+            copy_value_action = QAction("Copy Value", self)
+            copy_value_action.triggered.connect(lambda: self.copy_single_value(current_item))
+            menu.addAction(copy_value_action)
+            
+            # Copy row with headers
+            copy_row_action = QAction("Copy Row with Headers", self)
+            copy_row_action.triggered.connect(lambda: self.copy_row_with_headers(current_item.row()))
+            menu.addAction(copy_row_action)
+            
+            # Copy column with headers
+            copy_column_action = QAction("Copy Column with Headers", self)
+            copy_column_action.triggered.connect(lambda: self.copy_column_with_headers(current_item.column()))
+            menu.addAction(copy_column_action)
+            
+            menu.addSeparator()
+            
+            # Copy entire table
+            copy_table_action = QAction("Copy Table", self)
+            copy_table_action.triggered.connect(self.copy_entire_table)
+            menu.addAction(copy_table_action)
+            
+        menu.exec(self.table.mapToGlobal(position))
+        
+    def copy_single_value(self, item):
+        """Copy the value of a single cell to clipboard"""
+        if item:
+            clipboard = QApplication.clipboard()
+            clipboard.setText(item.text())
+            
+    def copy_row_with_headers(self, row_index):
+        """Copy a row with column headers to clipboard"""
+        if row_index < 0 or row_index >= self.table.rowCount():
+            return
+            
+        clipboard = QApplication.clipboard()
+        
+        # Get headers
+        headers = []
+        for col in range(self.table.columnCount()):
+            header_item = self.table.horizontalHeaderItem(col)
+            headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+        # Get row data
+        row_data = []
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row_index, col)
+            row_data.append(item.text() if item else "")
+            
+        # Format as tab-separated values
+        header_line = "\t".join(headers)
+        data_line = "\t".join(row_data)
+        result = f"{header_line}\n{data_line}"
+        
+        clipboard.setText(result)
+        
+    def copy_column_with_headers(self, column_index):
+        """Copy a column with header to clipboard"""
+        if column_index < 0 or column_index >= self.table.columnCount():
+            return
+            
+        clipboard = QApplication.clipboard()
+        
+        # Get header
+        header_item = self.table.horizontalHeaderItem(column_index)
+        header = header_item.text() if header_item else f"Column_{column_index}"
+        
+        # Get column data
+        column_data = [header]
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, column_index)
+            column_data.append(item.text() if item else "")
+            
+        # Join with newlines
+        result = "\n".join(column_data)
+        
+        clipboard.setText(result)
+        
+    def copy_entire_table(self):
+        """Copy the entire table with headers to clipboard"""
+        if self.table.rowCount() == 0 or self.table.columnCount() == 0:
+            return
+            
+        clipboard = QApplication.clipboard()
+        
+        # Get headers
+        headers = []
+        for col in range(self.table.columnCount()):
+            header_item = self.table.horizontalHeaderItem(col)
+            headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+        # Start with headers
+        table_data = ["\t".join(headers)]
+        
+        # Get all row data
+        for row in range(self.table.rowCount()):
+            row_data = []
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                row_data.append(item.text() if item else "")
+            table_data.append("\t".join(row_data))
+            
+        # Join all rows with newlines
+        result = "\n".join(table_data)
+        
+        clipboard.setText(result)
 
 
 class DuckDBGUI(QMainWindow):
