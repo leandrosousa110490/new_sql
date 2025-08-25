@@ -2957,11 +2957,23 @@ class DuckDBGUI(QMainWindow):
     def setup_database(self):
         """Initialize DuckDB connection"""
         try:
-            self.connection = duckdb.connect(':memory:')
+            # Create a temporary database file in the application directory
+            import tempfile
+            import os
+            
+            # Create temp directory if it doesn't exist
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            temp_dir = os.path.join(app_dir, 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Create temporary database file
+            db_file = os.path.join(temp_dir, 'duckdb_gui_temp.duckdb')
+            
+            self.connection = duckdb.connect(db_file)
             # Create a named database called 'local' for easier referencing
             self.connection.execute("CREATE SCHEMA IF NOT EXISTS local")
             self.connection.execute("USE local")
-            print("DuckDB connection established with 'local' database")
+            print(f"DuckDB connection established with temporary database: {db_file}")
         except Exception as e:
             QMessageBox.critical(self, "Database Error", f"Failed to connect to DuckDB: {e}")
             
@@ -4944,8 +4956,46 @@ SHOW TABLES;
     
     def closeEvent(self, event):
         """Handle application close event"""
-        if self.connection:
-            self.connection.close()
+        # Close database connection
+        if hasattr(self, 'connection') and self.connection:
+            try:
+                self.connection.close()
+                print("Database connection closed")
+            except Exception as e:
+                print(f"Error closing database connection: {e}")
+        
+        # Clean up temporary database file
+        try:
+            import os
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            temp_dir = os.path.join(app_dir, 'temp')
+            db_file = os.path.join(temp_dir, 'duckdb_gui_temp.duckdb')
+            wal_file = os.path.join(temp_dir, 'duckdb_gui_temp.duckdb.wal')
+            
+            # Remove database files if they exist
+            if os.path.exists(db_file):
+                os.remove(db_file)
+                print(f"Temporary database file deleted: {db_file}")
+            
+            if os.path.exists(wal_file):
+                os.remove(wal_file)
+                print(f"Temporary WAL file deleted: {wal_file}")
+            
+            # Remove temp directory if empty
+            if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                os.rmdir(temp_dir)
+                print("Temporary directory removed")
+                
+        except Exception as e:
+            print(f"Error cleaning up temporary files: {e}")
+        
+        # Save settings
+        try:
+            settings = QSettings()
+            settings.sync()
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+        
         event.accept()
 
 
