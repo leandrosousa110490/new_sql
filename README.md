@@ -24,6 +24,18 @@ A modern PyQt6-based database interface for DuckDB that allows you to load vario
 
 ## Installation
 
+### Quick Start (Recommended)
+
+**Windows:**
+- Double-click `run_app.bat` or run it from Command Prompt
+
+**macOS/Linux:**
+```bash
+./run_app.sh
+```
+
+### Manual Installation
+
 1. **Clone or download this repository**
 
 2. **Install dependencies**:
@@ -35,6 +47,15 @@ A modern PyQt6-based database interface for DuckDB that allows you to load vario
    ```bash
    python main.py
    ```
+
+### Troubleshooting
+
+If the application doesn't start on your computer:
+
+1. **Check the setup guide:** See `SETUP_GUIDE.md` for detailed installation instructions
+2. **Use the launcher scripts:** `run_app.bat` (Windows) or `run_app.sh` (macOS/Linux) include automatic dependency checking
+3. **Verify Python version:** Ensure you have Python 3.8 or higher installed
+4. **Check dependencies:** All required packages are listed in `requirements.txt`
 
 ## Usage
 
@@ -136,12 +157,20 @@ JOIN table2 t2 ON t1.id = t2.id;
 
 ## Troubleshooting
 
+### Quick Solutions
+
+1. **Application won't start**: Use the launcher scripts (`run_app.bat` for Windows or `run_app.sh` for macOS/Linux)
+2. **Detailed setup help**: Check `SETUP_GUIDE.md` for comprehensive installation and troubleshooting instructions
+3. **Missing dependencies**: Run `pip install -r requirements.txt` or use the launcher scripts for automatic installation
+
 ### Common Issues
 
 1. **Import Errors**: Ensure all dependencies are installed via `pip install -r requirements.txt`
 2. **File Loading Errors**: Check file permissions and format validity
 3. **QScintilla Not Available**: The app will fall back to a basic text editor if QScintilla isn't installed
-4. **Excel Files**: If Excel loading fails, ensure the file isn't password-protected or corrupted
+4. **Python Version**: Ensure you have Python 3.8 or higher installed
+5. **Platform-specific issues**: See `SETUP_GUIDE.md` for platform-specific installation notes
+6. **Excel Files**: If Excel loading fails, ensure the file isn't password-protected or corrupted
 
 ### Error Messages
 
