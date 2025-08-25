@@ -2665,12 +2665,18 @@ class ResultsTableWidget(QWidget):
         """Setup the results widget with table and pagination controls"""
         layout = QVBoxLayout(self)
         
-        # Results table
+        # Results table with performance optimizations
         self.table = QTableWidget()
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        
+        # Performance optimizations for smooth resizing
+        self.table.setUpdatesEnabled(True)  # Keep updates enabled by default
+        self.table.setSortingEnabled(False)  # Disable sorting for better performance
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         
         # Enable context menu
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -2723,17 +2729,33 @@ class ResultsTableWidget(QWidget):
         self.current_page = current_page
         self.current_query = query
         
-        # Update table
-        self.table.setRowCount(len(data))
-        self.table.setColumnCount(len(columns))
-        self.table.setHorizontalHeaderLabels(columns)
+        # Temporarily disable updates for better performance
+        self.table.setUpdatesEnabled(False)
         
-        for row_idx, row_data in enumerate(data):
-            for col_idx, cell_data in enumerate(row_data):
-                item = QTableWidgetItem(str(cell_data) if cell_data is not None else "")
-                self.table.setItem(row_idx, col_idx, item)
-                
-        self.table.resizeColumnsToContents()
+        try:
+            # Update table
+            self.table.setRowCount(len(data))
+            self.table.setColumnCount(len(columns))
+            self.table.setHorizontalHeaderLabels(columns)
+            
+            # Batch insert items for better performance
+            for row_idx, row_data in enumerate(data):
+                for col_idx, cell_data in enumerate(row_data):
+                    item = QTableWidgetItem(str(cell_data) if cell_data is not None else "")
+                    self.table.setItem(row_idx, col_idx, item)
+            
+            # Resize columns to contents only if dataset is small
+            if len(data) <= 100:
+                self.table.resizeColumnsToContents()
+            else:
+                # For large datasets, use uniform column width for better performance
+                header = self.table.horizontalHeader()
+                for i in range(len(columns)):
+                    header.resizeSection(i, 120)  # Set uniform width
+                    
+        finally:
+            # Re-enable updates
+            self.table.setUpdatesEnabled(True)
         
         # Update pagination info
         self.update_pagination_info()
@@ -2989,8 +3011,10 @@ class DuckDBGUI(QMainWindow):
         # Main layout
         main_layout = QHBoxLayout(central_widget)
         
-        # Create main splitter
+        # Create main splitter with optimized settings
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setOpaqueResize(True)  # Enable smooth resizing
+        main_splitter.setChildrenCollapsible(False)  # Prevent panels from collapsing completely
         main_layout.addWidget(main_splitter)
         
         # Left panel - Database tree
@@ -2999,6 +3023,8 @@ class DuckDBGUI(QMainWindow):
         
         # Right panel - SQL editor and results
         right_splitter = QSplitter(Qt.Orientation.Vertical)
+        right_splitter.setOpaqueResize(True)  # Enable smooth resizing
+        right_splitter.setChildrenCollapsible(False)  # Prevent panels from collapsing completely
         main_splitter.addWidget(right_splitter)
         
         # SQL Editor Tabs
@@ -3032,9 +3058,19 @@ class DuckDBGUI(QMainWindow):
         
         right_splitter.addWidget(self.results_tabs)
         
-        # Set splitter proportions
+        # Set splitter proportions and minimum sizes
         main_splitter.setSizes([300, 1100])
+        main_splitter.setStretchFactor(0, 0)  # Database tree doesn't stretch
+        main_splitter.setStretchFactor(1, 1)  # Right panel stretches
+        
         right_splitter.setSizes([400, 400])
+        right_splitter.setStretchFactor(0, 1)  # SQL editor stretches
+        right_splitter.setStretchFactor(1, 0)  # Results area has fixed behavior
+        
+        # Set minimum sizes to prevent panels from becoming too small
+        self.db_tree.setMinimumWidth(200)
+        self.query_tabs.setMinimumHeight(30)  # Allow collapsing to one line
+        self.results_tabs.setMinimumHeight(100)
         
         # Add some sample SQL to first tab
         sample_sql = """-- Welcome to DuckDB SQL GUI
