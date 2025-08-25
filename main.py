@@ -495,6 +495,11 @@ class ExcelImportDialog(QDialog):
         self.header_checkbox.setChecked(True)
         options_layout.addRow(self.header_checkbox)
         
+        self.convert_to_text_checkbox = QCheckBox("Convert all columns to text")
+        self.convert_to_text_checkbox.setChecked(False)
+        self.convert_to_text_checkbox.setToolTip("Convert all data types to text to avoid type conflicts")
+        options_layout.addRow(self.convert_to_text_checkbox)
+        
         layout.addWidget(options_group)
         
         # Preview section
@@ -2616,6 +2621,7 @@ SHOW TABLES;
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 sheet_name = dialog.sheet_input.text().strip() or None
+                convert_to_text = dialog.convert_to_text_checkbox.isChecked()
                 
                 # Use Polars to read Excel file with specified sheet
                 if sheet_name:
@@ -2623,9 +2629,20 @@ SHOW TABLES;
                 else:
                     df = pl.read_excel(file_path)  # First sheet by default
                 
+                # Convert all columns to text if requested
+                if convert_to_text:
+                    text_columns = []
+                    for col in df.columns:
+                        text_columns.append(pl.col(col).cast(pl.Utf8).alias(col))
+                    df = df.select(text_columns)
+                    self.log_message(f"All columns converted to text as requested")
+                
                 # Convert to DuckDB table
                 self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM df")
-                self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
+                success_msg = f"Successfully loaded {file_path} as table '{table_name}'"
+                if convert_to_text:
+                    success_msg += " (all columns as text)"
+                self.log_message(success_msg)
                 self.refresh_database_tree()
             except Exception as e:
                 error_msg = f"Error loading Excel file: {str(e)}"
@@ -2714,9 +2731,10 @@ SHOW TABLES;
             # Make sure table name is unique
             table_name = self.get_unique_table_name(table_name)
             
-            # Load and combine all Excel files
+            # Load and combine all Excel files with automatic text conversion for schema conflicts
             combined_df = None
             loaded_files = []
+            schema_conflicts_detected = False
             
             for file_path in excel_files:
                 try:
@@ -2726,6 +2744,14 @@ SHOW TABLES;
                     else:
                         df = pl.read_excel(file_path)  # Use first sheet
                     
+                    # Convert all columns to text to avoid schema conflicts
+                    # This ensures consistent data types across all files
+                    text_columns = []
+                    for col in df.columns:
+                        text_columns.append(pl.col(col).cast(pl.Utf8).alias(col))
+                    
+                    df = df.select(text_columns)
+                    
                     # Add source file column
                     df = df.with_columns(
                         pl.lit(os.path.basename(file_path)).alias('_source_file')
@@ -2734,8 +2760,13 @@ SHOW TABLES;
                     if combined_df is None:
                         combined_df = df
                     else:
-                        # Use concat with how='diagonal' to handle different schemas
-                        combined_df = pl.concat([combined_df, df], how='diagonal')
+                        try:
+                            # Try to concatenate normally first
+                            combined_df = pl.concat([combined_df, df], how='vertical')
+                        except Exception:
+                            # If vertical concat fails, use diagonal (handles different column sets)
+                            combined_df = pl.concat([combined_df, df], how='diagonal')
+                            schema_conflicts_detected = True
                     
                     loaded_files.append(os.path.basename(file_path))
                     
@@ -2753,10 +2784,14 @@ SHOW TABLES;
             # Create table in DuckDB
             self.connection.execute(f"CREATE TABLE local.{table_name} AS SELECT * FROM combined_df")
             
-            # Log success message
-            self.log_message(
-                f"Successfully loaded {len(loaded_files)} Excel files into table '{table_name}': {', '.join(loaded_files)}"
-            )
+            # Log success message with information about text conversion
+            success_msg = f"Successfully loaded {len(loaded_files)} Excel files into table '{table_name}': {', '.join(loaded_files)}"
+            if schema_conflicts_detected:
+                success_msg += "\nNote: Different column schemas detected - all columns converted to text for compatibility."
+            else:
+                success_msg += "\nNote: All columns automatically converted to text to ensure data consistency."
+            
+            self.log_message(success_msg)
             self.refresh_database_tree()
             
         except Exception as e:
