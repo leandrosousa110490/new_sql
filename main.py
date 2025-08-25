@@ -418,6 +418,32 @@ class CSVImportDialog(QDialog):
                     
             params_str = ", " + ", ".join(params) if params else ""
             return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv('{self.file_path}'{params_str})"
+    
+    def get_csv_query_as_text(self, table_name: str):
+        """Generate CSV loading query with all columns as text (VARCHAR)"""
+        delimiter = self.get_delimiter_value()
+        quote_char = self.get_quote_value()
+        
+        if delimiter is None:
+            # Use auto-detection with all columns as text
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{self.file_path}', ALL_VARCHAR=true)"
+        else:
+            # Use specific settings with all columns as text
+            params = []
+            params.append(f"delimiter='{delimiter}'")
+            params.append("ALL_VARCHAR=true")
+            
+            if not self.header_check.isChecked():
+                params.append("header=false")
+                
+            if quote_char is not None:
+                if quote_char == "":
+                    params.append("quote=''")
+                else:
+                    params.append(f"quote='{quote_char}'")
+                    
+            params_str = ", " + ", ".join(params) if params else ""
+            return f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv('{self.file_path}'{params_str})"
 
 
 class ExcelImportDialog(QDialog):
@@ -1636,6 +1662,22 @@ class SQLEditor(QWidget):
         else:
             self.editor.setPlainText(text)
     
+    def get_selected_text(self) -> str:
+        """Get the currently selected text in the editor"""
+        if QSCINTILLA_AVAILABLE:
+            return self.editor.selectedText()
+        else:
+            cursor = self.editor.textCursor()
+            return cursor.selectedText()
+    
+    def has_selection(self) -> bool:
+        """Check if there is any text selected in the editor"""
+        if QSCINTILLA_AVAILABLE:
+            return self.editor.hasSelectedText()
+        else:
+            cursor = self.editor.textCursor()
+            return cursor.hasSelection()
+    
     def apply_theme(self, theme_name: str):
         """Apply theme to the SQL editor"""
         self.current_theme = theme_name
@@ -2305,6 +2347,12 @@ SHOW TABLES;
         execute_action.triggered.connect(self.execute_query)
         query_menu.addAction(execute_action)
         
+        # Execute selected query
+        execute_selected_action = QAction('Execute Selected Query', self)
+        execute_selected_action.setShortcut('Ctrl+F5')
+        execute_selected_action.triggered.connect(self.execute_selected_query)
+        query_menu.addAction(execute_selected_action)
+        
         # Clear results
         clear_action = QAction('Clear Results', self)
         clear_action.triggered.connect(self.clear_results)
@@ -2519,14 +2567,33 @@ SHOW TABLES;
                 self.log_message(f"Successfully loaded {file_path} as table '{table_name}'")
                 self.refresh_database_tree()
             except Exception as e:
-                error_msg = f"Error loading CSV file: {str(e)}"
-                self.log_message(error_msg)
-                QMessageBox.critical(self, "CSV Load Error", error_msg)
+                # If there's a conversion error, try loading all columns as text
+                self.log_message(f"Initial load failed: {str(e)}. Retrying with all columns as text...")
+                try:
+                    query_with_text = dialog.get_csv_query_as_text(table_name)
+                    self.connection.execute(query_with_text)
+                    self.log_message(f"Successfully loaded {file_path} as table '{table_name}' with all columns as text")
+                    self.refresh_database_tree()
+                except Exception as e2:
+                    error_msg = f"Error loading CSV file even with text columns: {str(e2)}"
+                    self.log_message(error_msg)
+                    QMessageBox.critical(self, "CSV Load Error", error_msg)
                 
     def load_csv_file(self, file_path: str, table_name: str):
         """Load CSV file using DuckDB (direct method without dialog)"""
-        query = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}')"
-        self.connection.execute(query)
+        try:
+            query = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}')"
+            self.connection.execute(query)
+        except Exception as e:
+            # If there's a conversion error, try loading all columns as text
+            self.log_message(f"Initial auto-load failed: {str(e)}. Retrying with all columns as text...")
+            try:
+                query_with_text = f"CREATE TABLE local.{table_name} AS SELECT * FROM read_csv_auto('{file_path}', ALL_VARCHAR=true)"
+                self.connection.execute(query_with_text)
+                self.log_message(f"Successfully loaded {file_path} as table '{table_name}' with all columns as text")
+            except Exception as e2:
+                # Re-raise the original error if text loading also fails
+                raise e
         
     def load_excel_file_with_dialog(self, file_path: str, table_name: str):
         """Load Excel file with configuration dialog"""
@@ -2985,13 +3052,19 @@ SHOW TABLES;
             self.log_message(f"Error refreshing database tree: {e}")
             
     def execute_query(self):
-        """Execute the SQL query in the editor"""
+        """Execute the SQL query in the editor (selected text if available, otherwise full text)"""
         current_editor = self.get_current_editor()
         if not current_editor:
             self.log_message("No active query editor")
             return
-            
-        query = current_editor.get_text().strip()
+        
+        # Check if there's selected text, if so, execute only the selection
+        if current_editor.has_selection():
+            query = current_editor.get_selected_text().strip()
+            self.log_message("Executing selected query...")
+        else:
+            query = current_editor.get_text().strip()
+            self.log_message("Executing full query...")
         
         if not query:
             self.log_message("No query to execute")
@@ -3002,6 +3075,63 @@ SHOW TABLES;
         
         if not statements:
             self.log_message("No valid statements to execute")
+            return
+        
+        # Process USE statements first
+        non_use_statements = []
+        for stmt in statements:
+            if stmt.upper().startswith('USE '):
+                try:
+                    # Extract database name
+                    use_part = stmt[4:].strip()
+                    db_name = use_part.strip()
+                    
+                    # Update the current database context
+                    self.current_database = db_name
+                    self.update_database_context_display()
+                    self.log_message(f"Database context switched to '{db_name}'")
+                except Exception as e:
+                    self.log_message(f"Error processing USE statement: {e}")
+                    return
+            else:
+                non_use_statements.append(stmt)
+        
+        # If there are non-USE statements, execute them
+        if non_use_statements:
+            # Join the remaining statements
+            remaining_query = '; '.join(non_use_statements)
+            
+            # Execute with pagination (default page size and first page)
+            self.execute_paginated_query(remaining_query, 0, 1000)
+        else:
+            # Only USE statements were executed
+            self.progress_bar.setVisible(False)
+            self.query_stats_label.setText("Ready")
+    
+    def execute_selected_query(self):
+        """Execute only the selected text as a query"""
+        current_editor = self.get_current_editor()
+        if not current_editor:
+            self.log_message("No active query editor")
+            return
+        
+        if not current_editor.has_selection():
+            self.log_message("No text selected. Please select the query text you want to execute.")
+            return
+        
+        query = current_editor.get_selected_text().strip()
+        
+        if not query:
+            self.log_message("Selected text is empty")
+            return
+        
+        self.log_message("Executing selected query...")
+        
+        # Handle multi-statement queries by splitting on semicolons
+        statements = [stmt.strip() for stmt in query.split(';') if stmt.strip()]
+        
+        if not statements:
+            self.log_message("No valid statements in selection")
             return
         
         # Process USE statements first
