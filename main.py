@@ -478,7 +478,17 @@ class CSVImportDialog(QDialog):
             import duckdb
             
             # Create temporary connection for preview
-            temp_conn = duckdb.connect(":memory:")
+            import tempfile
+            import os
+            
+            # Create temp directory if it doesn't exist
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            temp_dir = os.path.join(app_dir, 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Create temporary database file for preview
+            preview_db_file = os.path.join(temp_dir, 'csv_preview_temp.duckdb')
+            temp_conn = duckdb.connect(preview_db_file)
             
             # Build the read_csv query based on settings
             delimiter = self.get_delimiter_value()
@@ -519,6 +529,13 @@ class CSVImportDialog(QDialog):
                     
             self.preview_table.resizeColumnsToContents()
             temp_conn.close()
+            
+            # Clean up temporary preview database file
+            try:
+                if os.path.exists(preview_db_file):
+                    os.remove(preview_db_file)
+            except Exception:
+                pass  # Ignore cleanup errors
             
         except Exception as e:
             # Clear preview on error
@@ -876,7 +893,17 @@ class DatabaseConnectionDialog(QDialog):
             import duckdb
             
             # Create a temporary connection for testing
-            test_conn = duckdb.connect(':memory:')
+            import tempfile
+            import os
+            
+            # Create temp directory if it doesn't exist
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            temp_dir = os.path.join(app_dir, 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            # Create temporary database file for testing
+            test_db_file = os.path.join(temp_dir, 'test_connection_temp.duckdb')
+            test_conn = duckdb.connect(test_db_file)
             
             # Install and load MySQL extension
             try:
@@ -912,6 +939,13 @@ class DatabaseConnectionDialog(QDialog):
             # Clean up
             test_conn.execute(f"DETACH {test_db_name}")
             test_conn.close()
+            
+            # Remove temporary test database file
+            try:
+                if os.path.exists(test_db_file):
+                    os.remove(test_db_file)
+            except Exception:
+                pass  # Ignore cleanup errors
             
             database_info = conn_data.database if conn_data.database else "All databases"
             QMessageBox.information(self, "Connection Test", 
@@ -3627,7 +3661,7 @@ SHOW TABLES;
         self.status_bar = self.statusBar()
         
         # Connection status
-        self.connection_label = QLabel("Connected to DuckDB (in-memory)")
+        self.connection_label = QLabel("Connected to DuckDB (temp database)")
         self.status_bar.addWidget(self.connection_label)
         
         # Database context
