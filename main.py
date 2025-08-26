@@ -3047,8 +3047,13 @@ class DuckDBGUI(QMainWindow):
         
         right_splitter.addWidget(self.query_tabs)
         
-        # Results area with tabs
+        # Results area with single result display and tabs for messages/automation
         self.results_tabs = QTabWidget()
+        
+        # Create single results table widget
+        self.single_results_table = ResultsTableWidget()
+        self.single_results_table.parent_gui = self
+        self.results_tabs.addTab(self.single_results_table, "Results")
         
         # Create first query tab (after results_tabs is initialized)
         self.add_new_query_tab("Query 1")
@@ -3116,16 +3121,14 @@ SHOW TABLES;
         
         tab_index = self.query_tabs.addTab(editor, tab_name)
         
-        # Create a dedicated results table for this query tab
-        results_table = ResultsTableWidget()
-        results_table.parent_gui = self
-        
-        # Store the mapping between query tab and results table
-        self.query_results_tables[tab_index] = results_table
-        
-        # Add the results table to the results tabs
-        results_tab_name = f"Results - {tab_name}"
-        self.results_tabs.insertTab(0, results_table, results_tab_name)
+        # Initialize empty results data for this query tab
+        self.query_results_tables[tab_index] = {
+            'data': [],
+            'columns': [],
+            'total_count': 0,
+            'current_page': 0,
+            'query': ''
+        }
         
         self.query_tabs.setCurrentIndex(tab_index)
         
@@ -3150,37 +3153,47 @@ SHOW TABLES;
     def on_query_tab_changed(self, index):
         """Handle query tab change to show corresponding results"""
         if index >= 0 and index in self.query_results_tables:
-            # Find the results tab for this query
-            results_table = self.query_results_tables[index]
-            for i in range(self.results_tabs.count()):
-                if self.results_tabs.widget(i) == results_table:
-                    self.results_tabs.setCurrentIndex(i)
-                    break
+            # Get stored results data for this query tab
+            results_data = self.query_results_tables[index]
+            
+            # Display the results in the single results table
+            if results_data['data'] or results_data['columns']:
+                self.single_results_table.display_results(
+                    results_data['data'],
+                    results_data['columns'],
+                    results_data['total_count'],
+                    results_data['current_page'],
+                    results_data['query']
+                )
+            else:
+                # Clear results if no data for this tab
+                self.single_results_table.clear_results()
+            
+            # Switch to Results tab to show the data
+            self.results_tabs.setCurrentIndex(0)
     
     def close_query_tab(self, index):
         """Close a query tab"""
         if self.query_tabs.count() > 1:  # Keep at least one tab
-            # Remove the corresponding results table
+            # Remove the corresponding results data
             if index in self.query_results_tables:
-                results_table = self.query_results_tables[index]
-                # Find and remove the results table from results_tabs
-                for i in range(self.results_tabs.count()):
-                    if self.results_tabs.widget(i) == results_table:
-                        self.results_tabs.removeTab(i)
-                        break
                 # Remove from mapping
                 del self.query_results_tables[index]
                 
                 # Update indices in the mapping for tabs after the closed one
                 updated_mapping = {}
-                for tab_index, table in self.query_results_tables.items():
+                for tab_index, results_data in self.query_results_tables.items():
                     if tab_index > index:
-                        updated_mapping[tab_index - 1] = table
+                        updated_mapping[tab_index - 1] = results_data
                     else:
-                        updated_mapping[tab_index] = table
+                        updated_mapping[tab_index] = results_data
                 self.query_results_tables = updated_mapping
             
             self.query_tabs.removeTab(index)
+            
+            # Update the results display for the new current tab
+            current_index = self.query_tabs.currentIndex()
+            self.on_query_tab_changed(current_index)
         else:
             # Don't allow closing the last tab - show a message instead
             QMessageBox.information(self, "Cannot Close Tab", 
@@ -3461,6 +3474,24 @@ SHOW TABLES;
         export_excel_action.setShortcut('Ctrl+E')
         export_excel_action.triggered.connect(self.export_results_excel)
         query_menu.addAction(export_excel_action)
+        
+        # Export Results as CSV
+        export_csv_action = QAction('Export Results as CSV...', self)
+        export_csv_action.setShortcut('Ctrl+Shift+C')
+        export_csv_action.triggered.connect(self.export_results_csv)
+        query_menu.addAction(export_csv_action)
+        
+        # Export Results as JSON
+        export_json_action = QAction('Export Results as JSON...', self)
+        export_json_action.setShortcut('Ctrl+Shift+J')
+        export_json_action.triggered.connect(self.export_results_json)
+        query_menu.addAction(export_json_action)
+        
+        # Export Results as Parquet
+        export_parquet_action = QAction('Export Results as Parquet...', self)
+        export_parquet_action.setShortcut('Ctrl+Shift+P')
+        export_parquet_action.triggered.connect(self.export_results_parquet)
+        query_menu.addAction(export_parquet_action)
         
         query_menu.addSeparator()
         
@@ -4490,20 +4521,24 @@ SHOW TABLES;
         """Handle successful query completion"""
         data, columns = result
         
-        # Get the current query tab index and its corresponding results table
+        # Get the current query tab index
         current_query_tab = self.query_tabs.currentIndex()
         if current_query_tab in self.query_results_tables:
-            results_table = self.query_results_tables[current_query_tab]
-            
-            # Display results with pagination info
+            # Store results data for this query tab
             current_page = getattr(self.query_worker, 'page_number', 0)
-            results_table.display_results(data, columns, total_count, current_page, query)
+            self.query_results_tables[current_query_tab] = {
+                'data': data,
+                'columns': columns,
+                'total_count': total_count,
+                'current_page': current_page,
+                'query': query
+            }
             
-            # Switch to the corresponding results tab
-            for i in range(self.results_tabs.count()):
-                if self.results_tabs.widget(i) == results_table:
-                    self.results_tabs.setCurrentIndex(i)
-                    break
+            # Display results in the single results table
+            self.single_results_table.display_results(data, columns, total_count, current_page, query)
+            
+            # Switch to Results tab to show the data
+            self.results_tabs.setCurrentIndex(0)
         
         # Update status
         if total_count == -1:
@@ -4596,8 +4631,7 @@ SHOW TABLES;
             QMessageBox.warning(self, "Warning", "No query results to export.")
             return
             
-        results_table = self.query_results_tables[current_query_index]
-        if results_table.table.rowCount() == 0:
+        if self.single_results_table.table.rowCount() == 0:
             QMessageBox.warning(self, "Warning", "No data to export.")
             return
             
@@ -4612,7 +4646,7 @@ SHOW TABLES;
             import pandas as pd
             
             # Get data from the table
-            table = results_table.table
+            table = self.single_results_table.table
             rows = table.rowCount()
             cols = table.columnCount()
             
@@ -4647,6 +4681,174 @@ SHOW TABLES;
             )
         except Exception as e:
             error_msg = f"Error exporting to Excel: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Export Error", error_msg)
+    
+    def export_results_csv(self):
+        """Export query results to CSV file"""
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index not in self.query_results_tables:
+            QMessageBox.warning(self, "Warning", "No query results to export.")
+            return
+            
+        if self.single_results_table.table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No data to export.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results as CSV", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            import csv
+            
+            # Get data from the table
+            table = self.single_results_table.table
+            rows = table.rowCount()
+            cols = table.columnCount()
+            
+            # Get column headers
+            headers = []
+            for col in range(cols):
+                header_item = table.horizontalHeaderItem(col)
+                headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+            # Write to CSV file
+            with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                
+                # Write headers
+                writer.writerow(headers)
+                
+                # Write data
+                for row in range(rows):
+                    row_data = []
+                    for col in range(cols):
+                        item = table.item(row, col)
+                        row_data.append(item.text() if item else "")
+                    writer.writerow(row_data)
+            
+            self.log_message(f"Results exported to CSV: {file_path}")
+            QMessageBox.information(self, "Success", f"Results exported successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Error exporting to CSV: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Export Error", error_msg)
+    
+    def export_results_json(self):
+        """Export query results to JSON file"""
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index not in self.query_results_tables:
+            QMessageBox.warning(self, "Warning", "No query results to export.")
+            return
+            
+        if self.single_results_table.table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No data to export.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results as JSON", "", "JSON Files (*.json);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            import json
+            
+            # Get data from the table
+            table = self.single_results_table.table
+            rows = table.rowCount()
+            cols = table.columnCount()
+            
+            # Get column headers
+            headers = []
+            for col in range(cols):
+                header_item = table.horizontalHeaderItem(col)
+                headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+            # Get data as list of dictionaries
+            data = []
+            for row in range(rows):
+                row_dict = {}
+                for col in range(cols):
+                    item = table.item(row, col)
+                    row_dict[headers[col]] = item.text() if item else ""
+                data.append(row_dict)
+            
+            # Write to JSON file
+            with open(file_path, 'w', encoding='utf-8') as jsonfile:
+                json.dump(data, jsonfile, indent=2, ensure_ascii=False)
+            
+            self.log_message(f"Results exported to JSON: {file_path}")
+            QMessageBox.information(self, "Success", f"Results exported successfully to:\n{file_path}")
+            
+        except Exception as e:
+            error_msg = f"Error exporting to JSON: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Export Error", error_msg)
+    
+    def export_results_parquet(self):
+        """Export query results to Parquet file"""
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index not in self.query_results_tables:
+            QMessageBox.warning(self, "Warning", "No query results to export.")
+            return
+            
+        if self.single_results_table.table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No data to export.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results as Parquet", "", "Parquet Files (*.parquet);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            import pandas as pd
+            
+            # Get data from the table
+            table = self.single_results_table.table
+            rows = table.rowCount()
+            cols = table.columnCount()
+            
+            # Get column headers
+            headers = []
+            for col in range(cols):
+                header_item = table.horizontalHeaderItem(col)
+                headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+            # Get data
+            data = []
+            for row in range(rows):
+                row_data = []
+                for col in range(cols):
+                    item = table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            # Create DataFrame and export to Parquet
+            df = pd.DataFrame(data, columns=headers)
+            df.to_parquet(file_path, index=False, engine='pyarrow')
+            
+            self.log_message(f"Results exported to Parquet: {file_path}")
+            QMessageBox.information(self, "Success", f"Results exported successfully to:\n{file_path}")
+            
+        except ImportError:
+            QMessageBox.critical(
+                self, "Error", 
+                "pandas and pyarrow are required for Parquet export.\n"
+                "Please install them using:\n"
+                "pip install pandas pyarrow"
+            )
+        except Exception as e:
+            error_msg = f"Error exporting to Parquet: {str(e)}"
             self.log_message(error_msg)
             QMessageBox.critical(self, "Export Error", error_msg)
         
