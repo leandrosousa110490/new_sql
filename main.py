@@ -38,6 +38,10 @@ except ImportError:
 
 import duckdb
 import polars as pl
+import threading
+import webbrowser
+from flask import Flask, jsonify, request, send_from_directory
+import json
 
 
 class DatabaseConnection:
@@ -2985,6 +2989,9 @@ class DuckDBGUI(QMainWindow):
         # Initial refresh to populate autocomplete
         self.refresh_database_tree()
         
+        # Initialize Flask web server for PivotJS visualization
+        self.setup_web_server()
+        
     def setup_database(self):
         """Initialize DuckDB connection"""
         try:
@@ -3475,6 +3482,12 @@ SHOW TABLES;
         export_excel_action.triggered.connect(self.export_results_excel)
         query_menu.addAction(export_excel_action)
         
+        # PivotJS Visualization
+        pivot_action = QAction('Visualize with PivotJS...', self)
+        pivot_action.setShortcut('Ctrl+P')
+        pivot_action.triggered.connect(self.open_pivot_visualization)
+        query_menu.addAction(pivot_action)
+        
         # Export Results as CSV
         export_csv_action = QAction('Export Results as CSV...', self)
         export_csv_action.setShortcut('Ctrl+Shift+C')
@@ -3600,6 +3613,14 @@ SHOW TABLES;
         load_csv_folder_btn = QPushButton('Load Folder (CSV)')
         load_csv_folder_btn.clicked.connect(self.load_csv_folder)
         toolbar.addWidget(load_csv_folder_btn)
+        
+        toolbar.addSeparator()
+        
+        # PivotJS Visualization button
+        pivot_btn = QPushButton('Visualize with PivotJS')
+        pivot_btn.clicked.connect(self.open_pivot_visualization)
+        pivot_btn.setToolTip('Open current query results in PivotJS for interactive visualization')
+        toolbar.addWidget(pivot_btn)
         
     def setup_status_bar(self):
         """Setup the status bar"""
@@ -5101,6 +5122,99 @@ SHOW TABLES;
             print(f"Error saving settings: {e}")
         
         event.accept()
+    
+    def setup_web_server(self):
+        """Initialize Flask web server for PivotJS visualization"""
+        self.flask_app = Flask(__name__, static_folder='static')
+        self.web_server_port = 5000
+        
+        # Configure Flask routes
+        @self.flask_app.route('/pivot')
+        def pivot_page():
+            return send_from_directory('static', 'pivot.html')
+        
+        @self.flask_app.route('/api/pivot-data')
+        def get_pivot_data():
+            try:
+                tab_id = request.args.get('tab_id')
+                if not tab_id:
+                    return jsonify({'success': False, 'error': 'No tab_id provided'})
+                
+                try:
+                    tab_index = int(tab_id)
+                except ValueError:
+                    return jsonify({'success': False, 'error': 'Invalid tab_id format'})
+                
+                # Get results data for the specified tab
+                if tab_index not in self.query_results_tables:
+                    return jsonify({'success': False, 'error': 'Tab not found'})
+                
+                results_data = self.query_results_tables[tab_index]
+                
+                if not results_data['data'] or not results_data['columns']:
+                    return jsonify({'success': False, 'error': 'No data available for this tab'})
+                
+                # Convert data to list of dictionaries for PivotJS
+                pivot_data = []
+                for row in results_data['data']:
+                    row_dict = {}
+                    for i, col_name in enumerate(results_data['columns']):
+                        if i < len(row):
+                            row_dict[col_name] = row[i]
+                        else:
+                            row_dict[col_name] = None
+                    pivot_data.append(row_dict)
+                
+                # Get query tab name
+                tab_name = self.query_tabs.tabText(tab_index) if tab_index < self.query_tabs.count() else f"Query {tab_index + 1}"
+                
+                return jsonify({
+                    'success': True,
+                    'data': pivot_data,
+                    'query_info': {
+                        'tab_name': tab_name,
+                        'query': results_data.get('query', ''),
+                        'total_count': results_data.get('total_count', len(pivot_data))
+                    }
+                })
+                
+            except Exception as e:
+                return jsonify({'success': False, 'error': str(e)})
+        
+        # Start Flask server in a separate thread
+        def run_server():
+            self.flask_app.run(host='127.0.0.1', port=self.web_server_port, debug=False, use_reloader=False)
+        
+        self.web_server_thread = threading.Thread(target=run_server, daemon=True)
+        self.web_server_thread.start()
+        print(f"Web server started on http://127.0.0.1:{self.web_server_port}")
+    
+    def open_pivot_visualization(self):
+        """Open PivotJS visualization for current query tab"""
+        current_tab_index = self.query_tabs.currentIndex()
+        
+        if current_tab_index == -1:
+            QMessageBox.warning(self, "Warning", "No query tab selected.")
+            return
+        
+        # Check if current tab has results
+        if current_tab_index not in self.query_results_tables:
+            QMessageBox.warning(self, "Warning", "No results available for the current query tab.")
+            return
+        
+        results_data = self.query_results_tables[current_tab_index]
+        if not results_data['data'] or not results_data['columns']:
+            QMessageBox.warning(self, "Warning", "No data available for visualization. Please run a query first.")
+            return
+        
+        # Open browser with PivotJS visualization
+        url = f"http://127.0.0.1:{self.web_server_port}/pivot?tab_id={current_tab_index}"
+        try:
+            webbrowser.open(url)
+            self.log_message(f"Opened PivotJS visualization: {url}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open browser: {str(e)}")
+            self.log_message(f"Error opening browser: {str(e)}")
 
 
 def main():
