@@ -3004,6 +3004,9 @@ class DuckDBGUI(QMainWindow):
         self.setWindowTitle("DuckDB SQL GUI")
         self.setGeometry(100, 100, 1400, 800)
         
+        # Initialize query results mapping
+        self.query_results_tables = {}  # Maps query tab index to results table
+        
         # Central widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -3031,19 +3034,15 @@ class DuckDBGUI(QMainWindow):
         self.query_tabs = QTabWidget()
         self.query_tabs.setTabsClosable(True)
         self.query_tabs.tabCloseRequested.connect(self.close_query_tab)
-        
-        # Create first query tab
-        self.add_new_query_tab("Query 1")
+        self.query_tabs.currentChanged.connect(self.on_query_tab_changed)
         
         right_splitter.addWidget(self.query_tabs)
         
         # Results area with tabs
         self.results_tabs = QTabWidget()
         
-        # Results table
-        self.results_table = ResultsTableWidget()
-        self.results_table.parent_gui = self
-        self.results_tabs.addTab(self.results_table, "Results")
+        # Create first query tab (after results_tabs is initialized)
+        self.add_new_query_tab("Query 1")
         
         # Messages/Log area
         self.messages_text = QTextEdit()
@@ -3099,21 +3098,85 @@ SHOW TABLES;
         elif hasattr(self, 'theme_manager'):
             editor.apply_theme(self.theme_manager.current_theme)
         
-        # Update table names for autocomplete
+        # Update table names for autocomplete (same logic as refresh_database_tree)
         if hasattr(self, 'connection') and self.connection:
             try:
-                tables_result = self.connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'local'").fetchall()
-                table_names = []
-                for table_row in tables_result:
-                    table_name = table_row[0]
-                    table_names.append(f"local.{table_name}")
-                    table_names.append(table_name)  # Also add without schema prefix
-                editor.update_table_names(table_names)
+                all_table_names = []
+                
+                # Get local tables
+                try:
+                    local_tables = self.connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
+                    for row in local_tables:
+                        table_name = row[0]
+                        all_table_names.append(f"local.{table_name}")
+                        all_table_names.append(table_name)
+                except Exception:
+                    pass
+                
+                # Get tables from connected external databases
+                if hasattr(self, 'db_manager'):
+                    for db_name, conn in self.db_manager.connections.items():
+                        if conn.connected:
+                            try:
+                                if conn.db_type == 'duckdb':
+                                    # For DuckDB connections, get all databases and their tables
+                                    databases_result = self.connection.execute(f"SHOW DATABASES FROM {db_name}").fetchall()
+                                    for db_row in databases_result:
+                                        schema_name = db_row[0]
+                                        try:
+                                            tables_result = self.connection.execute(f"SHOW TABLES FROM {db_name}.{schema_name}").fetchall()
+                                            for table_row in tables_result:
+                                                table_name = table_row[0]
+                                                all_table_names.append(f"{db_name}.{schema_name}.{table_name}")
+                                                all_table_names.append(f"{schema_name}.{table_name}")
+                                                all_table_names.append(table_name)
+                                        except:
+                                            pass
+                                else:
+                                    # For other database types, get tables directly
+                                    try:
+                                        tables_result = self.connection.execute(f"SHOW TABLES FROM {db_name}").fetchall()
+                                        for table_row in tables_result:
+                                            table_name = table_row[0]
+                                            if not table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
+                                                all_table_names.append(f"{db_name}.{table_name}")
+                                                all_table_names.append(table_name)
+                                    except:
+                                        # Fallback to information_schema query
+                                        try:
+                                            tables_result = self.connection.execute(
+                                                f"SELECT table_name FROM {db_name}.information_schema.tables "
+                                                f"WHERE table_schema = '{conn.database or db_name}' AND table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')"
+                                            ).fetchall()
+                                            for table_row in tables_result:
+                                                table_name = table_row[0]
+                                                if not table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
+                                                    all_table_names.append(f"{db_name}.{table_name}")
+                                                    all_table_names.append(table_name)
+                                        except:
+                                            pass
+                            except Exception:
+                                pass
+                
+                # Update the new editor with all collected table names
+                editor.update_table_names(all_table_names)
             except Exception:
                 # If table query fails, just skip autocomplete setup
                 pass
         
         tab_index = self.query_tabs.addTab(editor, tab_name)
+        
+        # Create a dedicated results table for this query tab
+        results_table = ResultsTableWidget()
+        results_table.parent_gui = self
+        
+        # Store the mapping between query tab and results table
+        self.query_results_tables[tab_index] = results_table
+        
+        # Add the results table to the results tabs
+        results_tab_name = f"Results - {tab_name}"
+        self.results_tabs.insertTab(0, results_table, results_tab_name)
+        
         self.query_tabs.setCurrentIndex(tab_index)
         
         # Enable context menu for tab bar (only set once)
@@ -3134,9 +3197,39 @@ SHOW TABLES;
         
         return editor
     
+    def on_query_tab_changed(self, index):
+        """Handle query tab change to show corresponding results"""
+        if index >= 0 and index in self.query_results_tables:
+            # Find the results tab for this query
+            results_table = self.query_results_tables[index]
+            for i in range(self.results_tabs.count()):
+                if self.results_tabs.widget(i) == results_table:
+                    self.results_tabs.setCurrentIndex(i)
+                    break
+    
     def close_query_tab(self, index):
         """Close a query tab"""
         if self.query_tabs.count() > 1:  # Keep at least one tab
+            # Remove the corresponding results table
+            if index in self.query_results_tables:
+                results_table = self.query_results_tables[index]
+                # Find and remove the results table from results_tabs
+                for i in range(self.results_tabs.count()):
+                    if self.results_tabs.widget(i) == results_table:
+                        self.results_tabs.removeTab(i)
+                        break
+                # Remove from mapping
+                del self.query_results_tables[index]
+                
+                # Update indices in the mapping for tabs after the closed one
+                updated_mapping = {}
+                for tab_index, table in self.query_results_tables.items():
+                    if tab_index > index:
+                        updated_mapping[tab_index - 1] = table
+                    else:
+                        updated_mapping[tab_index] = table
+                self.query_results_tables = updated_mapping
+            
             self.query_tabs.removeTab(index)
         else:
             # Don't allow closing the last tab - show a message instead
@@ -4457,9 +4550,20 @@ SHOW TABLES;
         """Handle successful query completion"""
         data, columns = result
         
-        # Display results with pagination info
-        current_page = getattr(self.query_worker, 'page_number', 0)
-        self.results_table.display_results(data, columns, total_count, current_page, query)
+        # Get the current query tab index and its corresponding results table
+        current_query_tab = self.query_tabs.currentIndex()
+        if current_query_tab in self.query_results_tables:
+            results_table = self.query_results_tables[current_query_tab]
+            
+            # Display results with pagination info
+            current_page = getattr(self.query_worker, 'page_number', 0)
+            results_table.display_results(data, columns, total_count, current_page, query)
+            
+            # Switch to the corresponding results tab
+            for i in range(self.results_tabs.count()):
+                if self.results_tabs.widget(i) == results_table:
+                    self.results_tabs.setCurrentIndex(i)
+                    break
         
         # Update status
         if total_count == -1:
@@ -4477,9 +4581,6 @@ SHOW TABLES;
         
         # Hide progress
         self.progress_bar.setVisible(False)
-        
-        # Switch to results tab
-        self.results_tabs.setCurrentIndex(0)
         
         # Only refresh tree if the query might have created/dropped tables
         query_upper = query.upper().strip()
@@ -4543,7 +4644,13 @@ SHOW TABLES;
         
     def export_results_csv(self):
         """Export current query results to CSV file"""
-        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index not in self.query_results_tables:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+            
+        current_results_table = self.query_results_tables[current_query_index]
+        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
             self.log_message("No query results to export. Please execute a query first.")
             return
             
@@ -4559,14 +4666,20 @@ SHOW TABLES;
             return
             
         try:
-            self.export_query_results(self.results_table.current_query, file_path, 'csv')
+            self.export_query_results(current_results_table.current_query, file_path, 'csv')
         except Exception as e:
             self.log_message(f"Error exporting to CSV: {e}")
             QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
     
     def export_results_excel(self):
         """Export current query results to Excel file"""
-        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+        current_tab_index = self.query_tabs.currentIndex()
+        if current_tab_index not in self.query_results_tables:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+        
+        current_results_table = self.query_results_tables[current_tab_index]
+        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
             self.log_message("No query results to export. Please execute a query first.")
             return
             
@@ -4582,14 +4695,20 @@ SHOW TABLES;
             return
             
         try:
-            self.export_query_results(self.results_table.current_query, file_path, 'excel')
+            self.export_query_results(current_results_table.current_query, file_path, 'excel')
         except Exception as e:
             self.log_message(f"Error exporting to Excel: {e}")
             QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
     
     def export_results_json(self):
         """Export current query results to JSON file"""
-        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+        current_tab_index = self.query_tabs.currentIndex()
+        if current_tab_index not in self.query_results_tables:
+            self.log_message("No query results to export. Please execute a query first.")
+            return
+        
+        current_results_table = self.query_results_tables[current_tab_index]
+        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
             self.log_message("No query results to export. Please execute a query first.")
             return
             
@@ -4605,14 +4724,17 @@ SHOW TABLES;
             return
             
         try:
-            self.export_query_results(self.results_table.current_query, file_path, 'json')
+            self.export_query_results(current_results_table.current_query, file_path, 'json')
         except Exception as e:
             self.log_message(f"Error exporting to JSON: {e}")
             QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
     
     def export_results_parquet(self):
         """Export current query results to Parquet file"""
-        if not hasattr(self.results_table, 'current_query') or not self.results_table.current_query:
+        current_query_tab_index = self.query_tabs.currentIndex()
+        current_results_table = self.query_results_tables.get(current_query_tab_index)
+        
+        if not current_results_table or not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
             self.log_message("No query results to export. Please execute a query first.")
             return
             
@@ -4628,7 +4750,7 @@ SHOW TABLES;
             return
             
         try:
-            self.export_query_results(self.results_table.current_query, file_path, 'parquet')
+            self.export_query_results(current_results_table.current_query, file_path, 'parquet')
         except Exception as e:
             self.log_message(f"Error exporting to Parquet: {e}")
             QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
@@ -4780,7 +4902,9 @@ SHOW TABLES;
         
     def clear_results(self):
         """Clear the results table and messages"""
-        self.results_table.clear_results()
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index in self.query_results_tables:
+            self.query_results_tables[current_query_index].clear_results()
         self.messages_text.clear()
         self.query_stats_label.setText("Ready")
         
