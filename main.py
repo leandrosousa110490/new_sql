@@ -1750,11 +1750,16 @@ class SQLEditor(QWidget):
     
     def update_table_names(self, table_names: list):
         """Update the list of table names for autocomplete"""
+        print(f"DEBUG SQLEditor: update_table_names called with {len(table_names)} tables: {table_names[:5]}...")  # Print to console for immediate visibility
         self.table_names = table_names
         
         if QSCINTILLA_AVAILABLE and hasattr(self, 'editor') and hasattr(self, 'lexer'):
             # For QsciScintilla, use the built-in autocompletion
             from PyQt6.Qsci import QsciAPIs
+            
+            # Clear existing API if it exists
+            if hasattr(self, 'api'):
+                self.api.clear()
             
             # Create API for autocompletion
             self.api = QsciAPIs(self.lexer)
@@ -1780,9 +1785,12 @@ class SQLEditor(QWidget):
             self.editor.setAutoCompletionReplaceWord(True)
             self.editor.setAutoCompletionShowSingle(True)
             
+            print(f"DEBUG SQLEditor: QsciScintilla autocomplete updated with {len(table_names)} table names")
+            
         elif self.model:
             # For QTextEdit, update the string list model
             self.model.setStringList(table_names)
+            print(f"DEBUG SQLEditor: QTextEdit autocomplete updated with {len(table_names)} table names")
         
     def get_text(self) -> str:
         """Get the current text in the editor"""
@@ -2956,6 +2964,7 @@ class DuckDBGUI(QMainWindow):
         self.query_worker = None
         self.current_database = 'local'  # Track current database context
         self.current_connection = 'local'  # Track current connection context
+        self.current_table_names = []  # Store current table names for autocomplete
         
         # Initialize theme manager
         self.theme_manager = ThemeManager()
@@ -3098,71 +3107,12 @@ SHOW TABLES;
         elif hasattr(self, 'theme_manager'):
             editor.apply_theme(self.theme_manager.current_theme)
         
-        # Update table names for autocomplete (same logic as refresh_database_tree)
-        if hasattr(self, 'connection') and self.connection:
-            try:
-                all_table_names = []
-                
-                # Get local tables
-                try:
-                    local_tables = self.connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'").fetchall()
-                    for row in local_tables:
-                        table_name = row[0]
-                        all_table_names.append(f"local.{table_name}")
-                        all_table_names.append(table_name)
-                except Exception:
-                    pass
-                
-                # Get tables from connected external databases
-                if hasattr(self, 'db_manager'):
-                    for db_name, conn in self.db_manager.connections.items():
-                        if conn.connected:
-                            try:
-                                if conn.db_type == 'duckdb':
-                                    # For DuckDB connections, get all databases and their tables
-                                    databases_result = self.connection.execute(f"SHOW DATABASES FROM {db_name}").fetchall()
-                                    for db_row in databases_result:
-                                        schema_name = db_row[0]
-                                        try:
-                                            tables_result = self.connection.execute(f"SHOW TABLES FROM {db_name}.{schema_name}").fetchall()
-                                            for table_row in tables_result:
-                                                table_name = table_row[0]
-                                                all_table_names.append(f"{db_name}.{schema_name}.{table_name}")
-                                                all_table_names.append(f"{schema_name}.{table_name}")
-                                                all_table_names.append(table_name)
-                                        except:
-                                            pass
-                                else:
-                                    # For other database types, get tables directly
-                                    try:
-                                        tables_result = self.connection.execute(f"SHOW TABLES FROM {db_name}").fetchall()
-                                        for table_row in tables_result:
-                                            table_name = table_row[0]
-                                            if not table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
-                                                all_table_names.append(f"{db_name}.{table_name}")
-                                                all_table_names.append(table_name)
-                                    except:
-                                        # Fallback to information_schema query
-                                        try:
-                                            tables_result = self.connection.execute(
-                                                f"SELECT table_name FROM {db_name}.information_schema.tables "
-                                                f"WHERE table_schema = '{conn.database or db_name}' AND table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')"
-                                            ).fetchall()
-                                            for table_row in tables_result:
-                                                table_name = table_row[0]
-                                                if not table_name.upper().startswith(('INNODB_', 'PERFORMANCE_', 'SYS_')):
-                                                    all_table_names.append(f"{db_name}.{table_name}")
-                                                    all_table_names.append(table_name)
-                                        except:
-                                            pass
-                            except Exception:
-                                pass
-                
-                # Update the new editor with all collected table names
-                editor.update_table_names(all_table_names)
-            except Exception:
-                # If table query fails, just skip autocomplete setup
-                pass
+        # Update table names for autocomplete using stored table names
+        if hasattr(self, 'current_table_names'):
+            editor.update_table_names(self.current_table_names)
+        else:
+            # If no table names are stored yet, initialize with empty list
+            editor.update_table_names([])
         
         tab_index = self.query_tabs.addTab(editor, tab_name)
         
@@ -3256,9 +3206,11 @@ SHOW TABLES;
     
     def update_all_editors_table_names(self, table_names):
         """Update table names for autocomplete in all editor tabs"""
+        self.log_message(f"DEBUG: Updating autocomplete for {self.query_tabs.count()} tabs with {len(table_names)} table names: {table_names[:10]}...")  # Show first 10 table names
         for i in range(self.query_tabs.count()):
             editor = self.query_tabs.widget(i)
             if isinstance(editor, SQLEditor):
+                self.log_message(f"DEBUG: Updating tab {i} autocomplete")
                 editor.update_table_names(table_names)
     
     def apply_theme_to_all_editors(self, theme_name):
@@ -3504,26 +3456,11 @@ SHOW TABLES;
         
         query_menu.addSeparator()
         
-        # Export results
-        export_csv_action = QAction('Export Results as CSV...', self)
-        export_csv_action.setShortcut('Ctrl+E')
-        export_csv_action.triggered.connect(self.export_results_csv)
-        query_menu.addAction(export_csv_action)
-        
+        # Export Results as Excel
         export_excel_action = QAction('Export Results as Excel...', self)
-        export_excel_action.setShortcut('Ctrl+Shift+E')
+        export_excel_action.setShortcut('Ctrl+E')
         export_excel_action.triggered.connect(self.export_results_excel)
         query_menu.addAction(export_excel_action)
-        
-        export_json_action = QAction('Export Results as JSON...', self)
-        export_json_action.setShortcut('Ctrl+J')
-        export_json_action.triggered.connect(self.export_results_json)
-        query_menu.addAction(export_json_action)
-        
-        export_parquet_action = QAction('Export Results as Parquet...', self)
-        export_parquet_action.setShortcut('Ctrl+P')
-        export_parquet_action.triggered.connect(self.export_results_parquet)
-        query_menu.addAction(export_parquet_action)
         
         query_menu.addSeparator()
         
@@ -4426,9 +4363,12 @@ SHOW TABLES;
                 except Exception as e:
                     self.log_message(f"Error refreshing tables for {db_name}: {e}")
             
+            # Store the collected table names for use in new tabs
+            self.current_table_names = all_table_names
+            
             # Update SQL editor autocomplete with all collected table names for all tabs
             self.update_all_editors_table_names(all_table_names)
-                    
+                        
         except Exception as e:
             self.log_message(f"Error refreshing database tree: {e}")
             
@@ -4582,10 +4522,9 @@ SHOW TABLES;
         # Hide progress
         self.progress_bar.setVisible(False)
         
-        # Only refresh tree if the query might have created/dropped tables
-        query_upper = query.upper().strip()
-        if any(keyword in query_upper for keyword in ['CREATE', 'DROP', 'ALTER']):
-            self.refresh_database_tree()
+        # Always refresh database tree to ensure autocomplete is up to date
+        # This ensures that all tabs have current table information for autocomplete
+        self.refresh_database_tree()
         
     def on_query_error(self, error_msg: str):
         """Handle query execution error"""
@@ -4641,265 +4580,7 @@ SHOW TABLES;
         self.query_worker.error.connect(self.on_query_error)
         self.query_worker.progress.connect(self.on_query_progress)
         self.query_worker.start()
-        
-    def export_results_csv(self):
-        """Export current query results to CSV file"""
-        current_query_index = self.query_tabs.currentIndex()
-        if current_query_index not in self.query_results_tables:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-            
-        current_results_table = self.query_results_tables[current_query_index]
-        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-            
-        # Get file path from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export Results as CSV", 
-            "", 
-            "CSV Files (*.csv)"
-        )
-        
-        if not file_path:
-            return
-            
-        try:
-            self.export_query_results(current_results_table.current_query, file_path, 'csv')
-        except Exception as e:
-            self.log_message(f"Error exporting to CSV: {e}")
-            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
-    
-    def export_results_excel(self):
-        """Export current query results to Excel file"""
-        current_tab_index = self.query_tabs.currentIndex()
-        if current_tab_index not in self.query_results_tables:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-        
-        current_results_table = self.query_results_tables[current_tab_index]
-        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-            
-        # Get file path from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export Results as Excel", 
-            "", 
-            "Excel Files (*.xlsx)"
-        )
-        
-        if not file_path:
-            return
-            
-        try:
-            self.export_query_results(current_results_table.current_query, file_path, 'excel')
-        except Exception as e:
-            self.log_message(f"Error exporting to Excel: {e}")
-            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
-    
-    def export_results_json(self):
-        """Export current query results to JSON file"""
-        current_tab_index = self.query_tabs.currentIndex()
-        if current_tab_index not in self.query_results_tables:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-        
-        current_results_table = self.query_results_tables[current_tab_index]
-        if not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-            
-        # Get file path from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export Results as JSON", 
-            "", 
-            "JSON Files (*.json)"
-        )
-        
-        if not file_path:
-            return
-            
-        try:
-            self.export_query_results(current_results_table.current_query, file_path, 'json')
-        except Exception as e:
-            self.log_message(f"Error exporting to JSON: {e}")
-            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
-    
-    def export_results_parquet(self):
-        """Export current query results to Parquet file"""
-        current_query_tab_index = self.query_tabs.currentIndex()
-        current_results_table = self.query_results_tables.get(current_query_tab_index)
-        
-        if not current_results_table or not hasattr(current_results_table, 'current_query') or not current_results_table.current_query:
-            self.log_message("No query results to export. Please execute a query first.")
-            return
-            
-        # Get file path from user
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, 
-            "Export Results as Parquet", 
-            "", 
-            "Parquet Files (*.parquet)"
-        )
-        
-        if not file_path:
-            return
-            
-        try:
-            self.export_query_results(current_results_table.current_query, file_path, 'parquet')
-        except Exception as e:
-            self.log_message(f"Error exporting to Parquet: {e}")
-            QMessageBox.critical(self, "Export Error", f"Failed to export results:\n{e}")
-    
-    def export_query_results(self, query, file_path, format_type):
-        """Execute query and export all results using streaming approach for efficiency"""
-        self.log_message(f"Starting streaming export to {format_type.upper()}...")
-        
-        # Show progress with enhanced status
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Indeterminate progress initially
-        self.query_stats_label.setText(f"Initializing {format_type.upper()} export...")
-        
-        try:
-            # Preprocess the query to handle database context
-            processed_query = query
-            if self.current_database and self.current_database != 'local':
-                processed_query = f"USE {self.current_database}; {query}"
-            
-            # First, get row count for progress tracking
-            self.query_stats_label.setText("Counting rows...")
-            count_query = f"SELECT COUNT(*) FROM ({processed_query}) AS count_subquery"
-            try:
-                total_rows = self.connection.execute(count_query).fetchone()[0]
-                self.log_message(f"Found {total_rows:,} rows to export")
-            except Exception:
-                total_rows = None
-                self.log_message("Unable to determine row count, proceeding with export...")
-            
-            # Use DuckDB's native COPY TO for efficient streaming export
-            if format_type == 'csv':
-                # Use DuckDB's native CSV export with streaming
-                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT CSV, HEADER)"
-                self.query_stats_label.setText(f"Streaming to CSV... ({total_rows:,} rows)" if total_rows else "Streaming to CSV...")
-                
-            elif format_type == 'json':
-                # Use DuckDB's native JSON export with streaming
-                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT JSON)"
-                self.query_stats_label.setText(f"Streaming to JSON... ({total_rows:,} rows)" if total_rows else "Streaming to JSON...")
-                
-            elif format_type == 'parquet':
-                # Use DuckDB's native Parquet export with streaming
-                copy_query = f"COPY ({processed_query}) TO '{file_path}' (FORMAT PARQUET)"
-                self.query_stats_label.setText(f"Streaming to Parquet... ({total_rows:,} rows)" if total_rows else "Streaming to Parquet...")
-                
-            elif format_type == 'excel':
-                # For Excel, we need to use a different approach since DuckDB doesn't natively support Excel
-                # We'll use chunked processing with pandas for Excel files
-                return self._export_excel_chunked(processed_query, file_path, total_rows)
-            else:
-                raise ValueError(f"Unsupported export format: {format_type}")
-            
-            # Execute the streaming export
-            import time
-            start_time = time.time()
-            self.connection.execute(copy_query)
-            end_time = time.time()
-            
-            export_time = end_time - start_time
-            
-            # Log success with performance metrics
-            if total_rows:
-                rows_per_second = total_rows / export_time if export_time > 0 else 0
-                self.log_message(f"Export completed: {total_rows:,} rows in {export_time:.2f}s ({rows_per_second:,.0f} rows/sec)")
-                success_msg = f"Successfully exported {total_rows:,} rows to {file_path}\n\nPerformance: {export_time:.2f} seconds ({rows_per_second:,.0f} rows/sec)"
-            else:
-                self.log_message(f"Export completed in {export_time:.2f}s")
-                success_msg = f"Successfully exported data to {file_path}\n\nTime: {export_time:.2f} seconds"
-            
-            # Show success message
-            QMessageBox.information(self, "Export Successful", success_msg)
-            
-        except Exception as e:
-            self.log_message(f"Export failed: {e}")
-            QMessageBox.critical(self, "Export Error", f"Failed to export data:\n\n{str(e)}")
-            raise e
-        finally:
-            self.progress_bar.setVisible(False)
-            self.query_stats_label.setText("Ready")
-    
-    def _export_excel_chunked(self, query, file_path, total_rows=None):
-        """Export large datasets to Excel using chunked processing"""
-        import pandas as pd
-        import time
-        
-        chunk_size = 100000  # Process 100K rows at a time
-        start_time = time.time()
-        
-        try:
-            # Create Excel writer
-            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-                offset = 0
-                chunk_num = 1
-                total_exported = 0
-                
-                while True:
-                    # Update progress
-                    if total_rows:
-                        progress = min(100, (offset / total_rows) * 100)
-                        self.progress_bar.setRange(0, 100)
-                        self.progress_bar.setValue(int(progress))
-                        self.query_stats_label.setText(f"Exporting chunk {chunk_num} ({offset:,}/{total_rows:,} rows, {progress:.1f}%)")
-                    else:
-                        self.query_stats_label.setText(f"Exporting chunk {chunk_num} ({offset:,} rows processed)")
-                    
-                    # Get chunk of data
-                    chunk_query = f"{query} LIMIT {chunk_size} OFFSET {offset}"
-                    result = self.connection.execute(chunk_query).fetchall()
-                    
-                    if not result:
-                        break  # No more data
-                    
-                    # Convert to DataFrame
-                    if offset == 0:  # First chunk, get column names
-                        columns = [desc[0] for desc in self.connection.description]
-                    
-                    df_chunk = pd.DataFrame(result, columns=columns)
-                    
-                    # Write to Excel (append mode for subsequent chunks)
-                    if offset == 0:
-                        df_chunk.to_excel(writer, sheet_name='Data', index=False)
-                        startrow = len(df_chunk) + 1
-                    else:
-                        df_chunk.to_excel(writer, sheet_name='Data', index=False, 
-                                         header=False, startrow=startrow)
-                        startrow += len(df_chunk)
-                    
-                    total_exported += len(result)
-                    offset += chunk_size
-                    chunk_num += 1
-                    
-                    # Break if we got less than chunk_size (last chunk)
-                    if len(result) < chunk_size:
-                        break
-            
-            end_time = time.time()
-            export_time = end_time - start_time
-            rows_per_second = total_exported / export_time if export_time > 0 else 0
-            
-            self.log_message(f"Excel export completed: {total_exported:,} rows in {export_time:.2f}s ({rows_per_second:,.0f} rows/sec)")
-            
-            # Show success message
-            success_msg = f"Successfully exported {total_exported:,} rows to {file_path}\n\nPerformance: {export_time:.2f} seconds ({rows_per_second:,.0f} rows/sec)"
-            QMessageBox.information(self, "Export Successful", success_msg)
-            
-        except Exception as e:
-            self.log_message(f"Excel export failed: {e}")
-            raise e
-        
+
     def clear_results(self):
         """Clear the results table and messages"""
         current_query_index = self.query_tabs.currentIndex()
@@ -4907,6 +4588,67 @@ SHOW TABLES;
             self.query_results_tables[current_query_index].clear_results()
         self.messages_text.clear()
         self.query_stats_label.setText("Ready")
+        
+    def export_results_excel(self):
+        """Export query results to Excel file"""
+        current_query_index = self.query_tabs.currentIndex()
+        if current_query_index not in self.query_results_tables:
+            QMessageBox.warning(self, "Warning", "No query results to export.")
+            return
+            
+        results_table = self.query_results_tables[current_query_index]
+        if results_table.table.rowCount() == 0:
+            QMessageBox.warning(self, "Warning", "No data to export.")
+            return
+            
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Results as Excel", "", "Excel Files (*.xlsx);;All Files (*)"
+        )
+        
+        if not file_path:
+            return
+            
+        try:
+            import pandas as pd
+            
+            # Get data from the table
+            table = results_table.table
+            rows = table.rowCount()
+            cols = table.columnCount()
+            
+            # Get column headers
+            headers = []
+            for col in range(cols):
+                header_item = table.horizontalHeaderItem(col)
+                headers.append(header_item.text() if header_item else f"Column_{col}")
+            
+            # Get data
+            data = []
+            for row in range(rows):
+                row_data = []
+                for col in range(cols):
+                    item = table.item(row, col)
+                    row_data.append(item.text() if item else "")
+                data.append(row_data)
+            
+            # Create DataFrame and export
+            df = pd.DataFrame(data, columns=headers)
+            df.to_excel(file_path, index=False, engine='openpyxl')
+            
+            self.log_message(f"Results exported to Excel: {file_path}")
+            QMessageBox.information(self, "Success", f"Results exported successfully to:\n{file_path}")
+            
+        except ImportError:
+            QMessageBox.critical(
+                self, "Error", 
+                "pandas and openpyxl are required for Excel export.\n"
+                "Please install them using:\n"
+                "pip install pandas openpyxl"
+            )
+        except Exception as e:
+            error_msg = f"Error exporting to Excel: {str(e)}"
+            self.log_message(error_msg)
+            QMessageBox.critical(self, "Export Error", error_msg)
         
     def log_message(self, message: str):
         """Add a message to the messages log"""
